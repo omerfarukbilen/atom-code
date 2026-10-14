@@ -6,7 +6,7 @@ import { create } from 'zustand'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
-import type { TerminalInfo } from '@shared/types'
+import type { AppSettings, TerminalInfo } from '@shared/types'
 import { basename } from '@shared/paths'
 import { atom } from '../lib/api'
 import { isMac } from '../lib/platform'
@@ -46,9 +46,18 @@ export interface TerminalState {
   clear(id?: string): void
 }
 
+interface TermDims {
+  cols: number
+  rows: number
+}
+
 const runtimes = new Map<string, TerminalRuntime>()
 const pendingData = new Map<string, string[]>()
-let lastDims = { cols: 120, rows: 30 }
+/** Size of the last fitted terminal — the fallback spawn size when the panel cannot be measured. */
+let lastDims: TermDims = { cols: 120, rows: 30 }
+
+/** Width of the terminal list TerminalPanel shows beside the terminal once there are two or more. */
+export const TERMINAL_LIST_WIDTH = 168
 
 const fontsReady: Promise<unknown> =
   typeof document !== 'undefined' && document.fonts
@@ -60,13 +69,73 @@ function shellTitle(info: TerminalInfo): string {
   return raw || 'shell'
 }
 
+/** Terminal settings, including keys a newer settings schema may add (read defensively). */
+type TerminalSettingsView = AppSettings['terminal'] & { macOptionIsMeta?: boolean }
+
 function terminalOptions() {
   const { settings } = useSettingsStore.getState()
+  const t: TerminalSettingsView = settings.terminal
   return {
-    fontFamily: withBundledFonts(settings.terminal.fontFamily),
-    fontSize: settings.terminal.fontSize,
-    cursorBlink: settings.terminal.cursorBlink,
+    fontFamily: withBundledFonts(t.fontFamily),
+    fontSize: t.fontSize,
+    cursorBlink: t.cursorBlink,
+    // Off by default (like xterm and VS Code): on non-US Mac layouts ⌥ types characters such as # @ { } [ ] | ~.
+    macOptionIsMeta: t.macOptionIsMeta === true,
     theme: buildXtermTheme(settings.theme)
+  }
+}
+
+/** Every option that affects the cell size, shared by real terminals and the measuring probe. */
+function xtermOptions(dims: TermDims) {
+  return {
+    ...terminalOptions(),
+    cols: dims.cols,
+    rows: dims.rows,
+    allowProposedApi: true,
+    scrollback: 5000,
+    lineHeight: 1.2,
+    cursorStyle: 'bar' as const,
+    cursorInactiveStyle: 'outline' as const,
+    allowTransparency: false,
+    drawBoldTextInBrightColors: true,
+    smoothScrollDuration: 0
+  }
+}
+
+/**
+ * Measure how many cols/rows a terminal gets in the panel, before its shell is spawned: a pty started at a
+ * stale size draws its first prompt, then redraws it on the resize that follows the first fit — leaving a
+ * duplicated (truncated) prompt above the real one. Null when the panel is not on screen.
+ */
+async function measurePanelDims(): Promise<TermDims | null> {
+  await fontsReady
+  // Let a panel that was just shown lay out (rAF never fires in a hidden window, hence the timeout).
+  await new Promise((r) => {
+    requestAnimationFrame(r)
+    setTimeout(r, 100)
+  })
+  const viewport = document.querySelector<HTMLElement>('[data-terminal-viewport]')
+  if (!viewport) return null
+  // A second terminal makes the panel show its terminal list beside the viewport.
+  const width = viewport.clientWidth - (useTerminalStore.getState().instances.length === 1 ? TERMINAL_LIST_WIDTH : 0)
+  const height = viewport.clientHeight
+  if (width < 20 || height < 20) return null
+  const host = document.createElement('div')
+  host.style.cssText = `position:fixed;left:-10000px;top:0;width:${width}px;height:${height}px;overflow:hidden;visibility:hidden`
+  document.body.appendChild(host)
+  const probe = new Terminal(xtermOptions(lastDims))
+  try {
+    const fit = new FitAddon()
+    probe.loadAddon(fit)
+    probe.open(host)
+    const dims = fit.proposeDimensions()
+    if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows) || dims.cols < 2 || dims.rows < 1) return null
+    return { cols: dims.cols, rows: dims.rows }
+  } catch {
+    return null
+  } finally {
+    probe.dispose()
+    host.remove()
   }
 }
 
@@ -74,20 +143,9 @@ function writeClipboard(text: string): void {
   void navigator.clipboard.writeText(text).catch(() => document.execCommand('copy'))
 }
 
-function createRuntime(id: string): TerminalRuntime {
-  const opts = terminalOptions()
-  const term = new Terminal({
-    ...opts,
-    allowProposedApi: true,
-    scrollback: 5000,
-    lineHeight: 1.2,
-    cursorStyle: 'bar',
-    cursorInactiveStyle: 'outline',
-    macOptionIsMeta: true,
-    allowTransparency: false,
-    drawBoldTextInBrightColors: true,
-    smoothScrollDuration: 0
-  })
+function createRuntime(id: string, dims: TermDims): TerminalRuntime {
+  // Created at the pty's size so the shell's first output is laid out the way the shell drew it.
+  const term = new Terminal(xtermOptions(dims))
   const fit = new FitAddon()
   term.loadAddon(fit)
   term.loadAddon(new WebLinksAddon((_event, uri) => void atom.app.openExternal(uri)))
@@ -116,7 +174,7 @@ function createRuntime(id: string): TerminalRuntime {
   host.className = 'atom-xterm-host'
   host.style.cssText = 'width:100%;height:100%;overflow:hidden'
 
-  const rt: TerminalRuntime = { term, fit, host, opened: false, cols: lastDims.cols, rows: lastDims.rows, disposables: [] }
+  const rt: TerminalRuntime = { term, fit, host, opened: false, cols: dims.cols, rows: dims.rows, disposables: [] }
   rt.disposables.push(
     term.onData((data) => {
       const inst = useTerminalStore.getState().instances.find((i) => i.id === id)
@@ -159,8 +217,10 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     set({ creating: true })
     try {
       const cwd = options.cwd ?? useWorkspaceStore.getState().workspace?.path
-      const info = await atom.terminal.create({ cwd, cols: lastDims.cols, rows: lastDims.rows })
-      const rt = createRuntime(info.id)
+      const dims = (await measurePanelDims().catch(() => null)) ?? lastDims
+      lastDims = dims
+      const info = await atom.terminal.create({ cwd, cols: dims.cols, rows: dims.rows })
+      const rt = createRuntime(info.id, dims)
       runtimes.set(info.id, rt)
       const queued = pendingData.get(info.id)
       if (queued) {
@@ -311,7 +371,8 @@ disposers.push(
     const t = s.settings.terminal
     const p = prev.settings.terminal
     const fontChanged = t.fontFamily !== p.fontFamily || t.fontSize !== p.fontSize
-    if (!themeChanged && !fontChanged && t.cursorBlink === p.cursorBlink) return
+    const metaChanged = (t as TerminalSettingsView).macOptionIsMeta !== (p as TerminalSettingsView).macOptionIsMeta
+    if (!themeChanged && !fontChanged && !metaChanged && t.cursorBlink === p.cursorBlink) return
     const opts = terminalOptions()
     for (const [id, rt] of runtimes) {
       if (themeChanged) rt.term.options.theme = opts.theme
@@ -320,6 +381,7 @@ disposers.push(
         rt.term.options.fontSize = opts.fontSize
       }
       rt.term.options.cursorBlink = opts.cursorBlink
+      rt.term.options.macOptionIsMeta = opts.macOptionIsMeta
       if (fontChanged) requestAnimationFrame(() => fitTerminal(id))
     }
   })

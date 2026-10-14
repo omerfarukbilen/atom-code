@@ -15,7 +15,7 @@ import { relativePath } from '../../shared/paths'
 import type { InlineEditDeltaEvent, InlineEditRequest, InlineEditResult } from '../../shared/types'
 import { ctx } from '../context'
 import { getAgentEnv } from '../services/auth'
-import { resolveClaudeBinary } from '../services/claude-binary'
+import { createClaudeSpawner, resolveClaudeBinary } from '../services/claude-binary'
 import { getRepoDiffForCommit } from '../services/git'
 import { settingsService } from '../services/settings'
 
@@ -238,10 +238,17 @@ async function runOneShot(params: OneShotParams): Promise<string> {
   }, params.timeoutMs)
 
   let stderrTail = ''
+  const onStderr = (data: string): void => {
+    stderrTail = (stderrTail + data).slice(-STDERR_TAIL_CHARS)
+  }
+  const claudeBinary = resolveClaudeBinary()
+  // `.js` entry points and unresolvable Windows `.cmd` shims cannot be spawned by the SDK itself.
+  const spawnClaudeCodeProcess = createClaudeSpawner(claudeBinary, onStderr)
   const options: Options = {
     abortController: controller,
     cwd: params.cwd,
-    pathToClaudeCodeExecutable: resolveClaudeBinary() ?? undefined,
+    pathToClaudeCodeExecutable: claudeBinary ?? undefined,
+    ...(spawnClaudeCodeProcess ? { spawnClaudeCodeProcess } : {}),
     env: getAgentEnv(),
     tools: [],
     settingSources: [],
@@ -254,9 +261,7 @@ async function runOneShot(params: OneShotParams): Promise<string> {
     thinking: { type: 'disabled' },
     mcpServers: {},
     strictMcpConfig: true,
-    stderr: (data) => {
-      stderrTail = (stderrTail + data).slice(-STDERR_TAIL_CHARS)
-    }
+    stderr: onStderr
   }
 
   let streamed = ''

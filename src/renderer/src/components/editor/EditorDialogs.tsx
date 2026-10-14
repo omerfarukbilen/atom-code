@@ -3,11 +3,11 @@ import { createRoot, type Root } from 'react-dom/client'
 import { AlertTriangle, FilePlus, FolderOpen } from 'lucide-react'
 import { basename } from '@shared/paths'
 import { FileIcon } from '../../lib/file-icons'
-import { registerDialogHost, useEditorStore, type UnsavedChoice } from '../../stores/editor'
+import { registerDialogHost, useEditorStore, type ConflictChoice, type ConflictReason, type UnsavedChoice } from '../../stores/editor'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { Button, Input, Kbd, Modal } from '../ui'
 
-/** Unsaved-changes confirmation and the New File prompt. Rendered by EditorArea. */
+/** Unsaved-changes confirmation, save conflicts and the New File prompt. Rendered by EditorArea. */
 export function EditorDialogs({ standalone = false }: { standalone?: boolean }) {
   const dialog = useEditorStore((s) => s.dialog)
   useEffect(() => {
@@ -17,6 +17,7 @@ export function EditorDialogs({ standalone = false }: { standalone?: boolean }) 
   }, [standalone])
   if (!dialog) return null
   if (dialog.kind === 'confirm-unsaved') return <UnsavedDialog paths={dialog.paths} onChoose={dialog.resolve} />
+  if (dialog.kind === 'save-conflict') return <ConflictDialog key={dialog.path} path={dialog.path} reason={dialog.reason} onChoose={dialog.resolve} />
   return <NewFileDialog initial={dialog.initial} />
 }
 
@@ -63,6 +64,61 @@ function UnsavedDialog({ paths, onChoose }: { paths: string[]; onChoose(choice: 
               ))}
             </ul>
           )}
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+/** A save would overwrite a newer version on disk, or unsaved edits in the file's own tab. */
+function ConflictDialog({ path, reason, onChoose }: { path: string; reason: ConflictReason; onChoose(choice: ConflictChoice): void }) {
+  const name = basename(path)
+  const cancelRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => focusLater(() => cancelRef.current?.focus()), [])
+  const disk = reason === 'disk'
+  return (
+    <Modal
+      open
+      onClose={() => onChoose('cancel')}
+      width="max-w-md"
+      title={disk ? `${name} changed on disk` : `${name} has unsaved changes in its tab`}
+      footer={
+        <>
+          {disk && (
+            <Button variant="ghost" size="sm" className="mr-auto" onClick={() => onChoose('compare')}>
+              Compare
+            </Button>
+          )}
+          <Button ref={cancelRef} variant="secondary" size="sm" onClick={() => onChoose('cancel')}>
+            Cancel
+          </Button>
+          {disk && (
+            <Button variant="secondary" size="sm" onClick={() => onChoose('reload')}>
+              Reload from Disk
+            </Button>
+          )}
+          <Button variant="danger" size="sm" onClick={() => onChoose('overwrite')}>
+            {disk ? 'Overwrite' : 'Save and Replace'}
+          </Button>
+        </>
+      }
+    >
+      <div className="flex gap-3 px-5 py-4">
+        <AlertTriangle size={18} className="mt-0.5 shrink-0 text-warning" />
+        <div className="min-w-0 flex-1 text-[12.5px] leading-relaxed text-muted">
+          {disk ? (
+            <p>
+              The file was modified outside this editor (for example by the agent or a terminal command) after you started editing it.
+              Overwriting replaces those changes with your version; reloading discards your unsaved edits.
+            </p>
+          ) : (
+            <p>
+              {name} is also open in a tab with unsaved edits. Saving this diff writes its version to disk and replaces those edits.
+            </p>
+          )}
+          <p className="mt-2 truncate font-mono text-[11.5px] text-subtle" title={path}>
+            {path}
+          </p>
         </div>
       </div>
     </Modal>

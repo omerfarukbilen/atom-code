@@ -7,6 +7,7 @@ import type * as NodePty from 'node-pty'
 import { IPC } from '../../shared/ipc'
 import type { TerminalDataEvent, TerminalExitEvent, TerminalInfo } from '../../shared/types'
 import { ctx } from '../context'
+import { ensurePtySpawnHelperExecutable } from './pty-helper'
 import { settingsService } from './settings'
 import { getCurrentWorkspace } from './workspace'
 
@@ -127,6 +128,8 @@ function loadPty(): Promise<PtyModule | null> {
     ptyModulePromise = import('node-pty')
       .then((mod: unknown): PtyModule | null => {
         const m = mod as { spawn?: unknown; default?: { spawn?: unknown } }
+        // macOS: node-pty's prebuilt spawn-helper ships without the execute bit.
+        ensurePtySpawnHelperExecutable()
         if (typeof m.spawn === 'function') return m as PtyModule
         if (m.default && typeof m.default.spawn === 'function') return m.default as PtyModule
         return null

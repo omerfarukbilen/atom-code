@@ -53,6 +53,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   customModes: [],
   recentWorkspaces: [],
   lastWorkspace: null,
+  trustedWorkspaces: [],
   filesExclude: ['.git', 'node_modules', '.DS_Store', 'dist', 'out', '.next', '__pycache__', '.venv', 'target'],
   telemetry: false
 }

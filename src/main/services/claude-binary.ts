@@ -8,12 +8,14 @@
  *     (`@anthropic-ai/claude-agent-sdk-<platform>-<arch>[-musl]/claude[.exe]`, asar-unpacked);
  *  3. `claude` on PATH (plus the usual install locations GUI-launched apps do not have on PATH).
  */
-import { execFile } from 'node:child_process'
-import { readdirSync, statSync } from 'node:fs'
+import { execFile, spawn } from 'node:child_process'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
-import { delimiter, isAbsolute, join } from 'node:path'
+import { delimiter, dirname, isAbsolute, join } from 'node:path'
+import type { SpawnedProcess, SpawnOptions } from '@anthropic-ai/claude-agent-sdk'
 import { unpackedPath } from '../context'
+import { parseCmdShimTarget } from './cmd-shim'
 import { settingsService } from './settings'
 
 const SDK_PACKAGE = '@anthropic-ai/claude-agent-sdk'
@@ -161,6 +163,35 @@ function findOnPath(name: string): string | null {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// npm shims (Windows)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The script or executable an npm `.cmd` shim launches, e.g. `%APPDATA%\npm\claude.cmd` →
+ * `…\node_modules\@anthropic-ai\claude-code\cli.js` (or a native `claude.exe`). The Agent SDK spawns
+ * the executable without a shell, which Node refuses for `.cmd`/`.bat` files, so ATOM Code drives the
+ * shim's target instead. Null when the file is not a recognizable npm shim or the target is missing.
+ */
+export function resolveCmdShimTarget(shimPath: string): string | null {
+  let text: string
+  try {
+    if (statSync(shimPath).size > 64 * 1024) return null
+    text = readFileSync(shimPath, 'utf8')
+  } catch {
+    return null
+  }
+  const target = parseCmdShimTarget(text)
+  if (!target) return null
+  const resolved = join(dirname(shimPath), ...target.split(/[\\/]+/))
+  return isFile(resolved) ? resolved : null
+}
+
+function preferShimTarget(bin: string | null): string | null {
+  if (!bin || !IS_WIN || !/\.(?:cmd|bat)$/i.test(bin)) return bin
+  return resolveCmdShimTarget(bin) ?? bin
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Public API
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -168,8 +199,8 @@ function resolveCustomBinary(raw: string): string | null {
   const value = raw.trim().replace(/^["']|["']$/g, '')
   if (!value) return null
   const expanded = expandHome(value)
-  if (isAbsolute(expanded)) return isFile(expanded) ? expanded : null
-  return findOnPath(expanded)
+  if (isAbsolute(expanded)) return isFile(expanded) ? preferShimTarget(expanded) : null
+  return preferShimTarget(findOnPath(expanded))
 }
 
 /**
@@ -182,7 +213,7 @@ export function resolveClaudeBinary(): string | null {
     const custom = resolveCustomBinary(agent.claudeExecutablePath ?? '')
     if (custom) return custom
   }
-  return resolveBundledBinary() ?? findOnPath('claude')
+  return resolveBundledBinary() ?? preferShimTarget(findOnPath('claude'))
 }
 
 /** How to launch a Claude Code executable with Node's child_process APIs on the current platform. */
@@ -208,6 +239,60 @@ export function buildClaudeCommand(bin: string, args: string[], env: Record<stri
     return { file: `"${bin}"`, args, shell: true, env }
   }
   return { file: bin, args, shell: false, env }
+}
+
+/** Quote one argument for a `cmd.exe /d /s /c "…"` command line that runs a batch file. */
+function quoteForCmd(arg: string): string {
+  return `"${arg.replace(/"/g, '""')}"`
+}
+
+/**
+ * A `spawnClaudeCodeProcess` implementation for executables the Agent SDK cannot start itself, or
+ * undefined for native binaries (the SDK's default spawn handles those):
+ * - `.js`/`.mjs`/`.cjs` entry points: the SDK would run `node <script>` from PATH (missing for apps
+ *   launched from the Dock, or a different Node); they run with Electron's bundled Node instead;
+ * - Windows `.cmd`/`.bat` files that are not resolvable npm shims: through `cmd.exe` (best effort).
+ * The SDK does not read stderr from a custom process, so it is forwarded to `onStderr` here.
+ */
+export function createClaudeSpawner(
+  bin: string | null | undefined,
+  onStderr?: (data: string) => void
+): ((options: SpawnOptions) => SpawnedProcess) | undefined {
+  if (!bin) return undefined
+  const isScript = /\.(?:c|m)?js$/i.test(bin)
+  const isBatch = IS_WIN && /\.(?:cmd|bat)$/i.test(bin)
+  if (!isScript && !isBatch) return undefined
+  return (options) => {
+    const env: Record<string, string> = {}
+    for (const [key, value] of Object.entries(options.env)) if (value !== undefined) env[key] = value
+    let child
+    if (isScript) {
+      // For scripts the SDK passes `<runtime> [...runtimeArgs] <script> ...cliArgs`; keep everything after the runtime.
+      const args = options.args.includes(bin) ? options.args : [bin, ...options.args]
+      child = spawn(process.execPath, args, {
+        cwd: options.cwd,
+        env: { ...env, ELECTRON_RUN_AS_NODE: '1' },
+        stdio: ['pipe', 'pipe', 'pipe'],
+        signal: options.signal,
+        windowsHide: true
+      })
+    } else {
+      const line = [quoteForCmd(bin), ...options.args.map(quoteForCmd)].join(' ')
+      child = spawn(line, [], {
+        cwd: options.cwd,
+        env,
+        shell: true,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        signal: options.signal,
+        windowsHide: true
+      })
+    }
+    child.stderr?.setEncoding('utf8')
+    child.stderr?.on('data', (data: string) => onStderr?.(data))
+    // An abort after exit (or a spawn failure) is reported through 'error'; never let it go unhandled.
+    child.on('error', () => undefined)
+    return child
+  }
 }
 
 /** Extract "2.1.299" from `claude --version` output such as "2.1.299 (Claude Code)". */

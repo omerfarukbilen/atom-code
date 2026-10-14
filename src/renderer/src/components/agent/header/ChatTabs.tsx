@@ -2,11 +2,12 @@ import { memo, useEffect, useMemo, useRef, useState, type DragEvent, type Keyboa
 import { X } from 'lucide-react'
 import { create } from 'zustand'
 import { findMode } from '@shared/modes'
+import { closeChatTab } from '../../../lib/agent-guards'
 import { DEFAULT_CHAT_TITLE, isRunning } from '../../../lib/agent-reducer'
 import { cn } from '../../../lib/cn'
 import { useAgentStore } from '../../../stores/agent'
 import { useSettingsStore } from '../../../stores/settings'
-import { confirmDialog, Spinner } from '../../ui'
+import { Spinner } from '../../ui'
 
 /** Which tab is being renamed inline (the header menu's "Rename chat" starts it too). */
 export const useTabRename = create<{ renamingId: string | null; start(id: string): void; stop(): void }>((set) => ({
@@ -17,21 +18,7 @@ export const useTabRename = create<{ renamingId: string | null; start(id: string
 
 const TAB_MIME = 'application/x-atom-chat-tab'
 
-/** Close a chat tab; asks first when a turn is still running. */
-export async function closeChatTab(id: string): Promise<void> {
-  const chat = useAgentStore.getState().chats[id]
-  if (!chat) return
-  if (isRunning(chat)) {
-    const ok = await confirmDialog({
-      title: 'Stop and close this chat?',
-      message: 'ATOM is still working in this chat. Closing it stops the current turn — you can reopen the conversation later from the history.',
-      confirmLabel: 'Stop & close',
-      danger: true
-    })
-    if (!ok) return
-  }
-  useAgentStore.getState().closeChat(id)
-}
+export { closeChatTab }
 
 /** Horizontally scrollable chat tabs: mode-colored status dot, title, close button; middle-click closes. */
 export function ChatTabs() {

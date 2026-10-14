@@ -52,9 +52,17 @@ export interface FileContent {
   isBinary: boolean
   /** True when the file is larger than the editor limit (5 MB) — content is empty. */
   tooLarge?: boolean
+  /**
+   * How the text was decoded (text files only). `utf8bom`: UTF-8 with a byte order mark;
+   * `windows-1252`: the bytes are not valid UTF-8 and were read as Windows-1252 / Latin-1. The main
+   * process remembers it and writes the file back in the same encoding (BOM included).
+   */
+  textEncoding?: TextEncodingId
   size: number
   mtimeMs: number
 }
+
+export type TextEncodingId = 'utf8' | 'utf8bom' | 'windows-1252'
 
 export interface FileStat {
   path: string
@@ -198,8 +206,9 @@ export interface TerminalExitEvent {
 
 /**
  * - `claude-subscription`: logged in through `claude auth login --claudeai` (Pro / Max / Team / Enterprise).
- * - `oauth-token`: a long-lived token created with `claude setup-token`, stored encrypted by ATOM Code.
- * - `api-key`: an Anthropic Console API key, stored encrypted by ATOM Code.
+ * - `oauth-token`: a long-lived token created with `claude setup-token`, stored by ATOM Code (encrypted
+ *   with the OS keyring when one is available — see `AuthStatus.secretStorage`).
+ * - `api-key`: an Anthropic Console API key, stored by ATOM Code (same storage).
  * - `console`: logged in through `claude auth login --console`.
  * - `third-party`: Bedrock / Vertex / Foundry etc. configured through environment variables.
  */
@@ -216,11 +225,31 @@ export interface AuthStatus {
   /** Absolute path of the Claude Code executable ATOM Code drives, or null when none was found. */
   claudeBinary: string | null
   claudeVersion?: string
-  /** True when ATOM Code holds an encrypted API key / OAuth token of its own. */
+  /** True when ATOM Code holds a usable API key / OAuth token of its own (see `secretStorage` for how). */
   hasStoredApiKey: boolean
   hasStoredOAuthToken: boolean
+  /** How ATOM Code stores its own credentials on this machine. */
+  secretStorage?: SecretStorageInfo
   error?: string
   checkedAt: number
+}
+
+export interface SecretStorageInfo {
+  /**
+   * True when credentials ATOM Code saves are encrypted with the OS keyring (Keychain, DPAPI,
+   * libsecret/kwallet). False when no keyring is available: they are then stored unencrypted in
+   * `file`, readable by anyone with access to your user account — the UI must not call them encrypted.
+   */
+  encrypted: boolean
+  /** Electron safeStorage backend on Linux, e.g. "gnome_libsecret", "kwallet5" or "basic_text". */
+  backend?: string
+  /** Absolute path of the file that holds the stored credentials. */
+  file: string
+  /**
+   * Stored credentials that were encrypted with a keyring that is not available in this session.
+   * They are kept on disk but not used until the keyring is back (or they are entered again).
+   */
+  locked?: ('apiKey' | 'oauthToken')[]
 }
 
 export type LoginMode = 'claudeai' | 'console' | 'setup-token'
@@ -318,7 +347,10 @@ export interface AgentSettings {
   autoIncludeActiveFile: boolean
   /** Enable SDK file checkpointing (restore files to any earlier user message). */
   enableCheckpoints: boolean
-  /** null = unlimited. */
+  /**
+   * Spending limit per chat in USD (estimated cost of the conversation, kept across agent restarts).
+   * The agent stops when the chat reaches it. null = unlimited.
+   */
   maxBudgetUsd: number | null
   /** null = unlimited. */
   maxTurns: number | null
@@ -383,6 +415,12 @@ export interface AppSettings {
   customModes: AgentModeDefinition[]
   recentWorkspaces: RecentWorkspace[]
   lastWorkspace: string | null
+  /**
+   * Folders whose Claude Code project configuration the user trusts (absolute, canonical paths; a
+   * folder inside a trusted one is trusted too). Only trusted workspaces load `.claude/settings*.json`
+   * (hooks, permissions, env), `.mcp.json` servers, CLAUDE.md and ATOM.md into agent sessions.
+   */
+  trustedWorkspaces: string[]
   /** Files/folders hidden from the explorer and quick open (glob names). */
   filesExclude: string[]
   telemetry: false
@@ -541,13 +579,27 @@ export interface PermissionRequest {
   blockedPath?: string
   /** Opaque PermissionUpdate[] suggestions from the SDK (needed for "always allow"). */
   suggestions?: unknown[]
+  /**
+   * The ask must not be approvable by a single stray keystroke: open the prompt on its decline option
+   * (no Enter-to-allow default, no one-key approve shortcut) and allow only on an explicit click.
+   */
+  defaultToNo?: boolean
+  /**
+   * Do not offer "Always allow": the rule cannot be saved for this ask (it would grant more than this
+   * action, or the folder's project configuration is not trusted, so .claude/settings.local.json is not
+   * loaded). Main downgrades an `always` answer to this chat only.
+   */
+  suppressAlwaysAllow?: boolean
   createdAt: number
 }
 
 export type PermissionResponse =
   | {
       behavior: 'allow'
-      /** once = just this call; session = for this chat; always = persist to project .claude/settings.local.json */
+      /**
+       * once = just this call; session = for this chat (kept across agent restarts); always = persist to
+       * project .claude/settings.local.json (this chat only when the request has `suppressAlwaysAllow`).
+       */
       scope: 'once' | 'session' | 'always'
       /** Modified tool input (AskUserQuestion answers are sent here). */
       updatedInput?: Record<string, unknown>

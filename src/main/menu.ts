@@ -1,7 +1,9 @@
 import { app, Menu, type MenuItemConstructorOptions } from 'electron'
 import { IPC } from '../shared/ipc'
 import type { MenuCommand } from '../shared/types'
+import { manageWorkspaceTrust } from './agent/workspace-trust'
 import { ctx } from './context'
+import { getCurrentWorkspace } from './services/workspace'
 
 /**
  * Native menu. Command items only *display* their shortcut (registerAccelerator: false) — the renderer
@@ -82,7 +84,15 @@ export function buildMenu(): void {
     },
     {
       label: 'Agent',
-      submenu: [cmd('New Chat', 'agent.newChat', 'CmdOrCtrl+Shift+L'), cmd('Focus Agent', 'agent.focus', 'CmdOrCtrl+L')]
+      submenu: [
+        cmd('New Chat', 'agent.newChat', 'CmdOrCtrl+Shift+L'),
+        cmd('Focus Agent', 'agent.focus', 'CmdOrCtrl+L'),
+        { type: 'separator' },
+        {
+          label: 'Workspace Trust…',
+          click: () => void manageWorkspaceTrust(getCurrentWorkspace()?.path ?? null).catch(() => undefined)
+        }
+      ]
     },
     {
       role: 'window',

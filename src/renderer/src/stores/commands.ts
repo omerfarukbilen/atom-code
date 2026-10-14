@@ -1,5 +1,6 @@
 import { create } from 'zustand'
-import { isMac } from '../lib/platform'
+import { isMac, isWindows } from '../lib/platform'
+import { matchesChord, matchesKeybindingOn, type KeyPlatform } from '../components/workbench/keybinding-match'
 
 /**
  * Global command registry. Every user-invokable action (palette entries, keyboard shortcuts, native menu
@@ -20,6 +21,12 @@ export interface Command {
   when?: () => boolean
   /** When true the keybinding also fires while focus is inside Monaco / inputs. Default true for mod-combos. */
   global?: boolean
+  /**
+   * When true, the keystroke is left to the shell if it is pressed with the physical Ctrl key while an
+   * integrated terminal has focus (readline / fzf / nano keys such as Ctrl+G, Ctrl+N, Ctrl+O). The command
+   * still runs from the palette and the native menu.
+   */
+  terminalPassthrough?: boolean
   run: () => void | Promise<void>
 }
 
@@ -61,51 +68,32 @@ export function listCommands(): Command[] {
     .sort((a, b) => (a.category ?? '').localeCompare(b.category ?? '') || a.title.localeCompare(b.title))
 }
 
-function normalizeKey(key: string): string {
-  const k = key.toLowerCase()
-  if (k === ' ') return 'space'
-  if (k === 'arrowup') return 'up'
-  if (k === 'arrowdown') return 'down'
-  if (k === 'arrowleft') return 'left'
-  if (k === 'arrowright') return 'right'
-  if (k === 'esc') return 'escape'
-  return k
+const PLATFORM: KeyPlatform = isMac ? 'mac' : isWindows ? 'windows' : 'linux'
+
+/** True when the keyboard event matches a binding like "mod+shift+p" (layout-aware, AltGr-safe). */
+export function matchesKeybinding(e: KeyboardEvent, binding: string): boolean {
+  return matchesKeybindingOn(e, binding, PLATFORM)
 }
 
-/** True when the keyboard event matches a binding like "mod+shift+p". */
-export function matchesKeybinding(e: KeyboardEvent, binding: string): boolean {
-  const parts = binding.toLowerCase().split('+')
-  const key = parts[parts.length - 1]
-  const wantMod = parts.includes('mod')
-  const wantCtrl = parts.includes('ctrl')
-  const wantShift = parts.includes('shift')
-  const wantAlt = parts.includes('alt')
-  const modPressed = isMac ? e.metaKey : e.ctrlKey
-  const ctrlPressed = isMac ? e.ctrlKey : false
-  if (wantMod !== modPressed) return false
-  if (isMac && wantCtrl !== ctrlPressed) return false
-  if (wantShift !== e.shiftKey) return false
-  if (wantAlt !== e.altKey) return false
-  // Use `code` for letters/digits so Shift/Alt layouts still match (e.g. Alt+B on macOS gives "∫").
-  const code = e.code.toLowerCase()
-  const fromCode = code.startsWith('key') ? code.slice(3) : code.startsWith('digit') ? code.slice(5) : null
-  const pressed = fromCode ?? normalizeKey(e.key)
-  if (key === ',' && (e.key === ',' || code === 'comma')) return true
-  if (key === '`' && (e.key === '`' || code === 'backquote')) return true
-  if (key === '\\' && code === 'backslash') return true
-  return pressed === key || normalizeKey(e.key) === key
+/** Keys the focused widget handles itself, e.g. `data-keys-passthrough="ctrl+n ctrl+p"` on the palette input. */
+function isPassthroughKey(e: KeyboardEvent, target: HTMLElement | null): boolean {
+  const chords = target?.closest?.('[data-keys-passthrough]')?.getAttribute('data-keys-passthrough')
+  return !!chords && chords.split(/\s+/).some((chord) => chord && matchesChord(e, chord))
 }
 
 /** Installs the global keydown listener. Call once from the app root. */
 export function installKeybindings(): () => void {
   const handler = (e: KeyboardEvent): void => {
     if (e.defaultPrevented) return
+    const target = e.target instanceof HTMLElement ? e.target : null
+    if (isPassthroughKey(e, target)) return
+    const inTerminal = !!target?.closest('.atom-xterm-host')
     const commands = Object.values(useCommandStore.getState().commands)
     for (const cmd of commands) {
       if (!cmd.keybinding) continue
       if (!matchesKeybinding(e, cmd.keybinding)) continue
+      if (cmd.terminalPassthrough && inTerminal && e.ctrlKey) continue
       if (cmd.when && !cmd.when()) continue
-      const target = e.target as HTMLElement | null
       const inEditable =
         !!target && (target.closest('.monaco-editor') || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
       const hasModifier = cmd.keybinding.includes('mod') || cmd.keybinding.includes('ctrl') || cmd.keybinding.includes('alt')

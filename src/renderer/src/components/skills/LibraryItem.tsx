@@ -103,15 +103,20 @@ export const LibraryItem = memo(function LibraryItem({ item, kind, enabled = tru
             </div>
           )}
         </div>
-        <div className="flex shrink-0 items-center gap-1" onClick={(e) => e.stopPropagation()}>
+        <div className="relative flex min-h-5 shrink-0 items-center" onClick={(e) => e.stopPropagation()}>
+          {/* Out of the layout flow (overlays the row's end on hover) so it never takes width from the name. */}
           <button
             type="button"
             title="More actions"
+            aria-label="More actions"
             onClick={(e) => {
               const r = e.currentTarget.getBoundingClientRect()
               ctx.openAt(r.left, r.bottom + 2)
             }}
-            className={cn('rounded p-0.5 text-subtle opacity-0 transition-opacity hover:bg-hover hover:text-fg group-hover:opacity-100', ctx.open && 'opacity-100')}
+            className={cn(
+              'absolute right-full top-1/2 mr-1 -translate-y-1/2 rounded bg-elevated p-0.5 text-subtle opacity-0 shadow-sm transition-opacity hover:bg-hover hover:text-fg focus-visible:opacity-100 group-hover:opacity-100 group-focus-visible:opacity-100',
+              ctx.open && 'opacity-100'
+            )}
           >
             <MoreHorizontal size={14} />
           </button>

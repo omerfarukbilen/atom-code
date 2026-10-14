@@ -214,9 +214,9 @@ export function McpSection() {
       )}
 
       <SettingGroup flush>
-        <Searchable terms="project .mcp.json servers loaded automatically">
+        <Searchable terms="project .mcp.json servers trusted folder workspace trust">
           <div className="rounded-lg border border-line bg-panel px-4 py-3 text-[12px] leading-relaxed text-muted">
-            Servers defined in a project’s <code className="font-mono text-[11px] text-fg">.mcp.json</code> are loaded automatically (Claude Code asks once before trusting them).
+            Servers defined in a project’s <code className="font-mono text-[11px] text-fg">.mcp.json</code> load only in folders you trust (Workspace: Manage Trust…).
             ATOM always adds its built-in <code className="font-mono text-[11px] text-fg">atom-ide</code> server so the agent can see your open editors, selection, diagnostics and terminal.
             {!chatId && ' Start a chat to see live connection status here.'}
           </div>

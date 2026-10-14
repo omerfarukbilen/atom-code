@@ -8,6 +8,7 @@ import {
   escapeAttribute,
   formatMention,
   renderUserPrompt,
+  renderUserPromptBlocks,
   workspaceRelativePath
 } from '../src/main/agent/prompt.ts'
 
@@ -186,6 +187,38 @@ describe('renderUserPrompt', () => {
       renderUserPrompt({ text: '', attachments: [{ type: 'file', path: `${WS}/a.ts` }] }, { workspace: WS }),
       'Attached: @a.ts'
     )
+  })
+})
+
+describe('renderUserPromptBlocks', () => {
+  // Claude Code derives a session's first/last prompt from the first text block that does not start with
+  // a tag (sessions whose only text starts with <atom_context> were missing from History).
+  const TAG_PREFIX = /^(?:\s*<[a-z][\w-]*[\s>])/
+
+  it('sends the <atom_context> preamble as its own block before the user text', () => {
+    const blocks = renderUserPromptBlocks(
+      { text: 'Why does this fail?', activeEditor: { path: `${WS}/src/app.ts`, line: 3 }, attachments: [{ type: 'file', path: `${WS}/a.ts` }] },
+      { workspace: WS }
+    )
+    assert.equal(blocks.length, 2)
+    assert.ok(blocks[0].startsWith('<atom_context>\n<active_editor path="src/app.ts" line="3" />'))
+    assert.equal(blocks[1], 'Attached: @a.ts\n\nWhy does this fail?')
+    assert.ok(!TAG_PREFIX.test(blocks[1]))
+    assert.equal(renderUserPrompt({ text: 'Why does this fail?', activeEditor: { path: `${WS}/src/app.ts`, line: 3 }, attachments: [{ type: 'file', path: `${WS}/a.ts` }] }, { workspace: WS }), blocks.join('\n\n'))
+  })
+
+  it('uses a single block without context, and for slash commands', () => {
+    assert.deepEqual(renderUserPromptBlocks({ text: 'hi' }, { workspace: WS }), ['hi'])
+    assert.deepEqual(
+      renderUserPromptBlocks({ text: '/atom:review', attachments: [{ type: 'terminal', text: 'out' }] }, { workspace: WS }),
+      ['/atom:review\n\n<atom_context>\n<terminal_output>\nout\n</terminal_output>\n</atom_context>']
+    )
+  })
+
+  it('keeps context-only messages as one block', () => {
+    assert.deepEqual(renderUserPromptBlocks({ text: '', attachments: [{ type: 'terminal', text: 'out' }] }, { workspace: WS }), [
+      '<atom_context>\n<terminal_output>\nout\n</terminal_output>\n</atom_context>'
+    ])
   })
 })
 

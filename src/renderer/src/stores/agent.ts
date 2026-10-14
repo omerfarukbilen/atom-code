@@ -95,7 +95,8 @@ export interface AgentStoreState {
 
   /**
    * Send a prompt. Without `text` the active chat's composer (text, attachments, images) is sent and cleared.
-   * While a turn is running the message is queued into it (priority 'next'). '/clear' opens a new chat.
+   * While a turn is running the message is held (shown as queued) and sent when the turn ends; `interrupt`
+   * returns held messages to the composer. '/clear' opens a new chat.
    */
   send(text?: string, opts?: SendOptions): Promise<void>
   interrupt(chatId?: string): Promise<void>
@@ -405,6 +406,68 @@ function closeRemote(chatId: string): void {
   if (pending) void pending.then(close, close)
   else close()
 }
+
+/** A message on its way to the CLI (its transcript item is shown optimistically). */
+interface OutgoingDraft {
+  uuid: string
+  text: string
+  attachments: ContextAttachment[]
+  images: ImageAttachment[]
+  fromComposer: boolean
+  /** Typed while a turn was running (held until it ended). */
+  held: boolean
+}
+
+/** Messages typed while a turn ran, per chat, oldest first — sent one per turn as turns end. */
+const heldMessages = new Map<string, OutgoingDraft[]>()
+/**
+ * Chats handing a held message to the CLI right now. Until that send returns, an `idle` status still arriving
+ * from the previous turn must not release the next one.
+ */
+const deliveringHeld = new Set<string>()
+let drainHeldMessages: () => void = () => undefined
+let drainScheduled = false
+
+function takeHeld(chatId: string): OutgoingDraft[] {
+  const list = heldMessages.get(chatId) ?? []
+  heldMessages.delete(chatId)
+  return list
+}
+
+/** After every store change: a chat that just went idle sends its next held message. */
+function scheduleHeldDrain(): void {
+  if (drainScheduled || !heldMessages.size) return
+  drainScheduled = true
+  queueMicrotask(() => drainHeldMessages())
+}
+
+/**
+ * Take messages back out of the transcript; the ones the user typed (or that were held) go back into the
+ * composer, ahead of whatever is there now, so nothing typed is lost.
+ */
+function withdrawMessages(c: ChatState, msgs: OutgoingDraft[]): ChatState {
+  if (!msgs.length) return c
+  const ids = new Set(msgs.map((m) => m.uuid))
+  const restore = msgs.filter((m) => m.fromComposer || m.held)
+  let n: ChatState = { ...c, items: c.items.filter((i) => !(i.kind === 'user' && ids.has(i.uuid))) }
+  if (restore.length) {
+    const cur = n.composer
+    const attachments: ContextAttachment[] = []
+    for (const a of [...restore.flatMap((m) => m.attachments), ...cur.attachments]) {
+      if (!attachments.some((b) => sameAttachment(a, b))) attachments.push(a)
+    }
+    const images: ImageAttachment[] = []
+    for (const img of [...restore.flatMap((m) => m.images), ...cur.images]) {
+      if (!images.some((j) => j.data === img.data)) images.push(img)
+    }
+    const text = [...restore.map((m) => m.text), cur.text]
+      .filter((t) => t.trim())
+      .join('\n\n')
+    n = { ...n, composer: { text, attachments, images } }
+  }
+  return n
+}
+
 const historyRequests = new Set<string>()
 let composerFocusFn: (() => void) | null = null
 let pendingComposerFocus = false
@@ -470,6 +533,83 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
     if (get().chats[chatId]?.started) fn().catch(report)
   }
 
+  /** Start the chat's CLI when needed and hand it one message (its transcript item is already shown). */
+  const deliver = async (chatId: string, m: OutgoingDraft): Promise<void> => {
+    const stopEpoch = stopEpochs.get(chatId) ?? 0
+    try {
+      await ensureStarted(chatId)
+      if ((stopEpochs.get(chatId) ?? 0) !== stopEpoch) {
+        // Stopped while the CLI was starting: take the prompt back into the composer instead of sending it.
+        update(chatId, (c) => {
+          const n = withdrawMessages(c, [m])
+          return n.status === 'starting' ? { ...n, status: 'idle', turnStartedAt: null } : n
+        })
+        return
+      }
+      const settings = useSettingsStore.getState().settings.agent
+      const message: OutgoingUserMessage = {
+        uuid: m.uuid,
+        text: m.text,
+        attachments: m.attachments,
+        images: m.images,
+        activeEditor: settings.autoIncludeActiveFile ? activeEditorInfo() : null
+      }
+      await atom.agent.send(chatId, message)
+    } catch (err) {
+      const msg = errorMessage(err)
+      // Messages held behind this one must not run ahead of it (and would likely fail the same way).
+      const rest = takeHeld(chatId)
+      update(chatId, (c) => {
+        // Take the message back out and restore the composer so the user can retry.
+        let n = withdrawMessages(c, [m, ...rest])
+        const alreadyShown = n.items
+          .slice(-3)
+          .some((i) => i.kind === 'notice' && i.variant === 'error' && (i.text === msg || i.detail === msg))
+        if (!alreadyShown) n = addNotice(n, { variant: 'error', text: 'Message not sent', detail: msg }, Date.now())
+        return {
+          ...n,
+          status: c.status === 'starting' || c.status === 'running' ? 'idle' : c.status,
+          turnStartedAt: null
+        }
+      })
+      if (!useLayoutStore.getState().agentVisible) toast.error('Message not sent', msg)
+    }
+  }
+
+  /** Send the next held message of every chat whose turn has ended (one per turn, oldest first). */
+  drainHeldMessages = (): void => {
+    drainScheduled = false
+    for (const [chatId, list] of [...heldMessages]) {
+      const c = get().chats[chatId]
+      if (!c || !list.length) {
+        heldMessages.delete(chatId)
+        continue
+      }
+      if (c.status === 'error' || c.status === 'closed') {
+        // The turn died: give the messages back rather than starting a new session on the user's behalf.
+        const msgs = takeHeld(chatId)
+        update(chatId, (x) => withdrawMessages(x, msgs))
+        continue
+      }
+      if (c.status !== 'idle' || c.pendingRequests.length || startPromises.has(chatId) || deliveringHeld.has(chatId)) continue
+      const [next, ...rest] = list
+      if (rest.length) heldMessages.set(chatId, rest)
+      else heldMessages.delete(chatId)
+      const now = Date.now()
+      update(chatId, (x) => ({
+        ...patchUserItem(x, next.uuid, { held: false, queued: false }),
+        status: x.started ? 'running' : 'starting',
+        turnStartedAt: now
+      }))
+      deliveringHeld.add(chatId)
+      void deliver(chatId, next).finally(() => {
+        deliveringHeld.delete(chatId)
+        // The turn may already have ended while the send was in flight.
+        scheduleHeldDrain()
+      })
+    }
+  }
+
   const composerOf = (chatId: string | null, fn: (composer: ChatState['composer']) => ChatState['composer']): void => {
     if (!chatId) return
     update(chatId, (c) => {
@@ -506,7 +646,8 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
       const s = get()
       const chat = s.chats[id]
       if (!chat) return
-      // Sends still waiting for the CLI to start must not reach a session that is being closed.
+      // Sends still waiting for the CLI to start (or for the turn to end) must not reach a closing session.
+      heldMessages.delete(id)
       if (startPromises.has(id)) stopEpochs.set(id, (stopEpochs.get(id) ?? 0) + 1)
       if (chat.started || startPromises.has(id)) closeRemote(id)
       const chats = { ...s.chats }
@@ -599,9 +740,10 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
 
       const settings = useSettingsStore.getState().settings.agent
       const msgUuid = uuid()
-      const busy = isRunning(chat) && (chat.started || startPromises.has(chatId))
+      // While a turn runs, the message is held here — not sent to the CLI yet — until the turn ends, so Stop can
+      // still withdraw it (see `drainHeldMessages`). Earlier held messages keep their place in line.
+      const busy = (isRunning(chat) && (chat.started || startPromises.has(chatId))) || heldMessages.has(chatId)
       const now = Date.now()
-      const stopEpoch = stopEpochs.get(chatId) ?? 0
 
       update(chatId, (c) => {
         let n = addUserMessage(
@@ -612,18 +754,12 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
             attachments,
             imageCount: images.length,
             checkpoint: settings.enableCheckpoints,
-            queued: busy,
+            held: busy,
             pending: true
           },
           now
         )
-        n = {
-          ...n,
-          workspace,
-          error: null,
-          suggestion: null,
-          queuedCount: busy ? c.queuedCount + 1 : c.queuedCount
-        }
+        n = { ...n, workspace, error: null, suggestion: null }
         if (fromComposer) n = { ...n, composer: { text: '', attachments: [], images: [] } }
         if (!c.titleEdited && c.title === DEFAULT_CHAT_TITLE && body) n = { ...n, title: titleFromPrompt(body) }
         if (!busy) n = { ...n, status: c.started ? 'running' : 'starting', turnStartedAt: now }
@@ -636,68 +772,20 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
         )
       }
 
-      try {
-        await ensureStarted(chatId)
-        if ((stopEpochs.get(chatId) ?? 0) !== stopEpoch) {
-          // Stopped while the CLI was starting: take the prompt back into the composer instead of sending it.
-          update(chatId, (c) => {
-            let n: ChatState = { ...c, items: c.items.filter((i) => !(i.kind === 'user' && i.uuid === msgUuid)) }
-            if (fromComposer) {
-              const cur = n.composer
-              n = {
-                ...n,
-                composer: {
-                  text: cur.text.trim() ? `${body}\n\n${cur.text}` : body,
-                  attachments: [...attachments, ...cur.attachments.filter((a) => !attachments.some((b) => sameAttachment(a, b)))],
-                  images: [...images, ...cur.images.filter((i) => !images.some((j) => j.data === i.data))]
-                }
-              }
-            }
-            const settling = n.status === 'starting'
-            return {
-              ...n,
-              queuedCount: busy ? Math.max(0, n.queuedCount - 1) : n.queuedCount,
-              status: settling ? 'idle' : n.status,
-              turnStartedAt: settling ? null : n.turnStartedAt
-            }
-          })
-          return
-        }
-        const message: OutgoingUserMessage = {
-          uuid: msgUuid,
-          text: body,
-          attachments,
-          images,
-          activeEditor: settings.autoIncludeActiveFile ? activeEditorInfo() : null
-        }
-        if (busy) message.priority = 'next'
-        await atom.agent.send(chatId, message)
-      } catch (err) {
-        const msg = errorMessage(err)
-        update(chatId, (c) => {
-          // Take the message back out and restore the composer so the user can retry.
-          let n: ChatState = { ...c, items: c.items.filter((i) => !(i.kind === 'user' && i.uuid === msgUuid)) }
-          if (fromComposer && !n.composer.text.trim() && !n.composer.images.length) {
-            n = { ...n, composer: { text: body, attachments, images } }
-          }
-          const alreadyShown = n.items
-            .slice(-3)
-            .some((i) => i.kind === 'notice' && i.variant === 'error' && (i.text === msg || i.detail === msg))
-          if (!alreadyShown) n = addNotice(n, { variant: 'error', text: 'Message not sent', detail: msg }, Date.now())
-          return {
-            ...n,
-            queuedCount: busy ? Math.max(0, c.queuedCount - 1) : c.queuedCount,
-            status: busy ? c.status : c.status === 'starting' || c.status === 'running' ? 'idle' : c.status,
-            turnStartedAt: busy ? c.turnStartedAt : null
-          }
-        })
-        if (!useLayoutStore.getState().agentVisible) toast.error('Message not sent', msg)
+      const outgoing: OutgoingDraft = { uuid: msgUuid, text: body, attachments, images, fromComposer, held: busy }
+      if (busy) {
+        heldMessages.set(chatId, [...(heldMessages.get(chatId) ?? []), outgoing])
+        return
       }
+      await deliver(chatId, outgoing)
     },
 
     interrupt: async (chatId) => {
       const id = resolveId(chatId)
       if (!id) return
+      // Stop means stop: messages typed during the turn are not sent — they go back into the composer.
+      const held = takeHeld(id)
+      if (held.length) update(id, (c) => withdrawMessages(c, held))
       if (!get().chats[id].started) {
         if (!startPromises.has(id)) return
         // Nothing runs yet: cancel the sends waiting for the CLI and settle the optimistic "starting" state.
@@ -1042,6 +1130,7 @@ function switchWorkspace(path: string): void {
       chats[id] = { ...c, workspace: path }
       carried.push(id)
     } else if (c.started || startPromises.has(id)) {
+      heldMessages.delete(id)
       if (startPromises.has(id)) stopEpochs.set(id, (stopEpochs.get(id) ?? 0) + 1)
       closeRemote(id)
     }
@@ -1137,6 +1226,7 @@ export function initAgentStore(): void {
   if (useSettingsStore.getState().loaded) applySettingsDefaults()
 
   useAgentStore.subscribe(schedulePersist)
+  useAgentStore.subscribe(scheduleHeldDrain)
   window.addEventListener('beforeunload', persistNow)
 }
 

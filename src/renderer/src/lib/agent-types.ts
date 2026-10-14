@@ -162,6 +162,11 @@ export interface UserItem {
   pending: boolean
   /** Sent while a turn was running; waiting to be folded into / run after the current turn. */
   queued: boolean
+  /**
+   * Typed while a turn was running and kept by ATOM (not sent to the CLI yet) until that turn ends, so Stop can
+   * withdraw it. Held messages always trail the transcript; they are also `queued`.
+   */
+  held?: boolean
   /** Sending failed with this error. */
   failed?: string
   /** Loaded from session history rather than sent in this app session. */
@@ -194,6 +199,8 @@ export interface NoticeItem {
   text: string
   /** Optional longer text (command output, error details) — render as preformatted/markdown. */
   detail?: string
+  /** info: `detail` is Markdown written by ATOM itself (e.g. /help) and renders formatted. */
+  detailMarkdown?: boolean
   createdAt: number
   // variant specific (all optional):
   /** compact: what triggered it and the token counts. */

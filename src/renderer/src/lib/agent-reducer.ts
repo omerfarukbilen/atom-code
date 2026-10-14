@@ -383,9 +383,11 @@ type NoticeInit = Omit<NoticeItem, 'kind' | 'id' | 'createdAt'>
 
 /** Append a notice to the transcript (pure). */
 export function addNotice(chat: ChatState, notice: NoticeInit, now: number = Date.now()): ChatState {
-  const [id, next] = nextId(chat, 'notice')
-  const item: NoticeItem = { kind: 'notice', id, createdAt: now, ...notice }
-  return { ...next, items: [...next.items, item], updatedAt: now }
+  return aboveHeld(chat, (c) => {
+    const [id, next] = nextId(c, 'notice')
+    const item: NoticeItem = { kind: 'notice', id, createdAt: now, ...notice }
+    return { ...next, items: [...next.items, item], updatedAt: now }
+  })
 }
 
 /** Replace the trailing notice of the same variant, or append a new one. */
@@ -408,13 +410,22 @@ export interface NewUserMessage {
   checkpoint?: boolean
   /** Sent while a turn is running. */
   queued?: boolean
+  /** Kept by ATOM until the running turn ends (implies `queued`); see `UserItem.held`. */
+  held?: boolean
   pending?: boolean
   fromHistory?: boolean
 }
 
-/** Append a user prompt to the transcript (used optimistically by the store). Clears the prompt suggestion. */
+/**
+ * Append a user prompt to the transcript (used optimistically by the store). Clears the prompt suggestion.
+ * A `held` message goes to the very end; anything else goes above the held messages.
+ */
 export function addUserMessage(chat: ChatState, msg: NewUserMessage, now: number = Date.now()): ChatState {
   if (chat.items.some((i) => i.kind === 'user' && i.uuid === msg.uuid)) return chat
+  return msg.held ? appendUserMessage(chat, msg, now) : aboveHeld(chat, (c) => appendUserMessage(c, msg, now))
+}
+
+function appendUserMessage(chat: ChatState, msg: NewUserMessage, now: number): ChatState {
   const item: UserItem = {
     kind: 'user',
     id: msg.uuid,
@@ -425,11 +436,41 @@ export function addUserMessage(chat: ChatState, msg: NewUserMessage, now: number
     thumbnails: msg.thumbnails ?? [],
     checkpoint: msg.checkpoint ?? false,
     pending: msg.pending ?? true,
-    queued: msg.queued ?? false,
+    queued: !!(msg.queued || msg.held),
+    held: msg.held || undefined,
     fromHistory: msg.fromHistory || undefined,
     createdAt: now
   }
   return { ...chat, items: [...chat.items, item], suggestion: null, updatedAt: now }
+}
+
+/** Number of held user messages (they always trail the transcript). */
+export function heldCount(chat: Pick<ChatState, 'items'>): number {
+  let n = 0
+  for (let i = chat.items.length - 1; i >= 0; i--) {
+    const it = chat.items[i]
+    if (it.kind !== 'user' || !it.held) break
+    n++
+  }
+  return n
+}
+
+/** Messages waiting to run: queued in the CLI plus held by ATOM until the current turn ends. */
+export function queuedMessageCount(chat: Pick<ChatState, 'items' | 'queuedCount'>): number {
+  return chat.queuedCount + heldCount(chat)
+}
+
+/**
+ * Apply `fn` as if the held messages were not in the transcript yet, then put them back at the end: the rest
+ * of the running turn (and notices) renders above them, and "trailing item" logic is not confused by them.
+ */
+function aboveHeld(chat: ChatState, fn: (c: ChatState) => ChatState): ChatState {
+  const n = heldCount(chat)
+  if (!n) return fn(chat)
+  const base: ChatState = { ...chat, items: chat.items.slice(0, -n) }
+  const next = fn(base)
+  if (next === base) return chat
+  return { ...next, items: next.items === base.items ? chat.items : [...next.items, ...chat.items.slice(-n)] }
 }
 
 /** Patch a user item by uuid (thumbnails ready, send failed, …). */
@@ -1859,6 +1900,11 @@ function touch(prev: ChatState, next: ChatState, now: number): ChatState {
  * `now` is injectable for deterministic tests.
  */
 export function reduceAgentEvent(chat: ChatState, event: AgentEvent, now: number = Date.now()): ChatState {
+  // Held messages have not reached the CLI: nothing it reports belongs after (or to) them.
+  return aboveHeld(chat, (c) => reduceAgentEventInner(c, event, now))
+}
+
+function reduceAgentEventInner(chat: ChatState, event: AgentEvent, now: number): ChatState {
   const ctx: Ctx = { now, history: false }
   let next: ChatState
   switch (event.type) {

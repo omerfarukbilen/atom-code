@@ -2,12 +2,14 @@ import { memo, useEffect, useRef, type ReactNode } from 'react'
 import { CaseSensitive, ChevronRight, ChevronsDownUp, ChevronsUpDown, Ellipsis, Regex, RefreshCw, Search, WholeWord, X } from 'lucide-react'
 import type { SearchFileResult, SearchMatch } from '@shared/types'
 import { basename } from '@shared/paths'
+import { atom } from '../../lib/api'
 import { cn } from '../../lib/cn'
 import { FileIcon } from '../../lib/file-icons'
-import { useEditorStore } from '../../stores/editor'
+import { getFileModel, useEditorStore } from '../../stores/editor'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { Badge, Button, EmptyState, IconButton, Spinner } from '../ui'
 import { ViewHeader } from '../workbench/ViewHeader'
+import { absoluteMatchColumn, isWindowedPreview } from './match-column'
 import { useSearchStore } from './searchStore'
 
 export function SearchView() {
@@ -221,10 +223,36 @@ const FileResult = memo(function FileResult({ file, collapsed }: { file: SearchF
   )
 })
 
+/** Text of a 1-based line: from the open buffer when there is one, otherwise from disk. */
+async function readLine(path: string, line: number): Promise<string | null> {
+  const model = getFileModel(path)
+  if (model && !model.isDisposed()) return line <= model.getLineCount() ? model.getLineContent(line) : null
+  const file = await atom.fs.readFile(path)
+  if (file.isBinary || file.tooLarge) return null
+  let start = 0
+  for (let i = 1; i < line; i++) {
+    const nl = file.content.indexOf('\n', start)
+    if (nl < 0) return null
+    start = nl + 1
+  }
+  const end = file.content.indexOf('\n', start)
+  return file.content.slice(start, end < 0 ? undefined : end).replace(/\r$/, '')
+}
+
+/** Editor column of a match (`match.column` counts in the preview, which is windowed for long lines). */
+async function editorColumn(path: string, match: SearchMatch): Promise<number> {
+  // Forward-compatible: an absolute column provided by main wins.
+  const lineColumn = (match as SearchMatch & { lineColumn?: number }).lineColumn
+  if (typeof lineColumn === 'number') return lineColumn
+  if (!isWindowedPreview(match.preview)) return match.column
+  const text = await readLine(path, match.line).catch(() => null)
+  return text === null ? match.column : absoluteMatchColumn(match.preview, match.column, text)
+}
+
 const MatchRow = memo(function MatchRow({ path, match }: { path: string; match: SearchMatch }) {
   const { before, hit, after } = splitPreview(match)
   const open = (preview: boolean): void => {
-    void useEditorStore.getState().openFile(path, { line: match.line, column: match.column, preview, focus: !preview })
+    void editorColumn(path, match).then((column) => useEditorStore.getState().openFile(path, { line: match.line, column, preview, focus: !preview }))
   }
   return (
     <button

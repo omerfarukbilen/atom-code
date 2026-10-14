@@ -7,6 +7,7 @@
 import { create } from 'zustand'
 import { BUILTIN_MODES } from '@shared/modes'
 import type { ContextAttachment } from '@shared/types'
+import { closeChatTab } from './agent-guards'
 import { DEFAULT_CHAT_TITLE, isRunning, stripAtomContext } from './agent-reducer'
 import type { AssistantBlock, ChatState, ToolCall } from './agent-types'
 import { getActiveChat, useAgentStore } from '../stores/agent'
@@ -277,9 +278,10 @@ function buildCommands(): Command[] {
       title: 'Close Chat',
       category: 'Agent',
       icon: 'XSquare',
-      run: () => {
+      run: async () => {
         const id = agent().activeChatId
-        if (id) agent().closeChat(id)
+        // Same confirmation as the tab's close button while a turn is running.
+        if (id) await closeChatTab(id)
       }
     },
     { id: 'agent.nextChat', title: 'Next Chat', category: 'Agent', keybinding: 'mod+alt+right', global: true, when: () => agent().order.length > 1, run: () => cycleChat(1) },

@@ -44,8 +44,18 @@ export interface CursorState {
 
 export type UnsavedChoice = 'save' | 'discard' | 'cancel'
 
+/** Answer to a save that would overwrite something newer. */
+export type ConflictChoice = 'overwrite' | 'compare' | 'reload' | 'cancel'
+
+/**
+ * Why a save needs confirmation: `disk` — the file changed on disk since it was loaded/saved (the agent or a
+ * terminal command edited it); `dirty-tab` — saving a diff would replace unsaved edits in the file's own tab.
+ */
+export type ConflictReason = 'disk' | 'dirty-tab'
+
 export type EditorDialog =
   | { kind: 'confirm-unsaved'; paths: string[]; resolve: (choice: UnsavedChoice) => void }
+  | { kind: 'save-conflict'; path: string; reason: ConflictReason; resolve: (choice: ConflictChoice) => void }
   | { kind: 'new-file'; initial: string }
   | null
 
@@ -91,7 +101,11 @@ export interface EditorState extends EditorStoreApi {
   closeSaved(): Promise<void>
   reopenClosed(): Promise<void>
   cycleTab(delta: 1 | -1): void
-  saveFile(path: string, options?: { format?: boolean }): Promise<boolean>
+  /** `auto`: an auto-save — never prompts (a conflict with the disk pauses it and shows a toast instead). */
+  saveFile(path: string, options?: { format?: boolean; auto?: boolean }): Promise<boolean>
+  saveAll(options?: { auto?: boolean }): Promise<void>
+  /** Re-read the file behind an editable diff tab; unsaved diff edits are kept unless `force`. */
+  reloadDiffFromDisk(id: string, force?: boolean): Promise<void>
   /** Discard unsaved changes and reload the file from disk. */
   revertFile(path: string): Promise<void>
   revealLine(path: string, line: number, options?: { column?: number; endLine?: number; focus?: boolean }): void
@@ -161,6 +175,11 @@ interface DiffEntry {
   original: monaco.editor.ITextModel
   modified: monaco.editor.ITextModel
   savedVersion: number
+  /**
+   * Editable diffs: the file's content on disk as last loaded/saved (the modified side's baseline), used to
+   * notice external changes. Null for read-only diffs (snapshots that never follow the disk).
+   */
+  diskText: string | null
   disposables: monaco.IDisposable[]
 }
 
@@ -404,7 +423,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
     if (autoSave !== 'afterDelay') return
     entry.autoSaveTimer = window.setTimeout(() => {
       if (entry.model.isDisposed()) return
-      if (entry.model.getAlternativeVersionId() !== entry.savedVersion) void get().saveFile(entry.path, { format: false })
+      if (entry.model.getAlternativeVersionId() !== entry.savedVersion) void get().saveFile(entry.path, { format: false, auto: true })
     }, Math.max(200, autoSaveDelayMs))
   }
 
@@ -485,10 +504,15 @@ export const useEditorStore = create<EditorState>((set, get) => {
     else mru = [...mru, tab.id]
   }
 
+  /** Cancel a pending promise-based dialog before showing another one. */
+  const settleDialog = (): void => {
+    const prev = get().dialog
+    if (prev?.kind === 'confirm-unsaved' || prev?.kind === 'save-conflict') prev.resolve('cancel')
+  }
+
   const askUnsaved = (paths: string[]): Promise<UnsavedChoice> =>
     new Promise<UnsavedChoice>((resolve) => {
-      const prev = get().dialog
-      if (prev?.kind === 'confirm-unsaved') prev.resolve('cancel')
+      settleDialog()
       set({
         dialog: {
           kind: 'confirm-unsaved',
@@ -502,20 +526,90 @@ export const useEditorStore = create<EditorState>((set, get) => {
       void ensureDialogHost()
     })
 
-  const notifyConflict = (path: string): void => {
+  const askConflict = (path: string, reason: ConflictReason): Promise<ConflictChoice> =>
+    new Promise<ConflictChoice>((resolve) => {
+      settleDialog()
+      set({
+        dialog: {
+          kind: 'save-conflict',
+          path,
+          reason,
+          resolve: (choice) => {
+            set({ dialog: null })
+            resolve(choice)
+          }
+        }
+      })
+      void ensureDialogHost()
+    })
+
+  /** Throttled per path: the watcher and auto-save can both report the same conflict within seconds. */
+  const throttledConflictToast = (path: string, show: () => void): void => {
     const k = pathKey(path)
     const last = conflictToasts.get(k) ?? 0
     if (Date.now() - last < 6000) return
     conflictToasts.set(k, Date.now())
-    toast.show(
-      {
-        kind: 'warning',
-        message: 'File changed on disk',
-        detail: `${basename(path)} has unsaved changes. Reloading will discard them.`,
-        action: { label: 'Reload', run: () => void get().revertFile(path) }
-      },
-      12000
+    show()
+  }
+
+  const notifyConflict = (path: string, reload: () => void = () => void get().revertFile(path)): void => {
+    throttledConflictToast(path, () =>
+      toast.show(
+        {
+          kind: 'warning',
+          message: 'File changed on disk',
+          detail: `${basename(path)} has unsaved changes. Reload to discard them, or save to compare and choose.`,
+          action: { label: 'Reload', run: reload }
+        },
+        12000
+      )
     )
+  }
+
+  const notifyAutoSaveConflict = (path: string, resolve: () => void): void => {
+    throttledConflictToast(path, () =>
+      toast.show(
+        {
+          kind: 'warning',
+          message: 'Auto-save paused',
+          detail: `${basename(path)} changed on disk. Save it to choose between your version and the one on disk.`,
+          action: { label: 'Resolve…', run: resolve }
+        },
+        12000
+      )
+    )
+  }
+
+  /**
+   * The disk content when the file changed on disk since the buffer last matched it — the stat'ed mtime is
+   * no longer `knownMtimeMs` and the content is neither unchanged nor already `text`. Null when there is no
+   * conflict (or nothing to compare: missing file, unreadable stat — the write reports real errors).
+   */
+  const findDiskConflict = async (path: string, knownMtimeMs: number, text: string): Promise<string | null> => {
+    try {
+      const stat = await atom.fs.stat(path)
+      if (!stat.exists || stat.isDirectory || stat.mtimeMs === knownMtimeMs) return null
+      const disk = await atom.fs.readFile(path)
+      if (disk.isBinary || disk.tooLarge) return ''
+      return disk.content === text ? null : disk.content
+    } catch {
+      return null
+    }
+  }
+
+  /** Current text of the file on disk, or null when it cannot be read (missing, permissions). */
+  const readDiskText = async (path: string): Promise<string | null> => {
+    try {
+      const disk = await atom.fs.readFile(path)
+      return disk.isBinary || disk.tooLarge ? '' : disk.content
+    } catch {
+      return null
+    }
+  }
+
+  /** Read-only diff of the version on disk (left) against the unsaved buffer (right). */
+  const openDiskCompare = (path: string, disk: string, buffer: string): void => {
+    get().openDiff({ path, title: `${basename(path)} (On Disk ↔ Unsaved)`, original: disk, modified: buffer, readOnly: true })
   }
 
   const reloadInternal = (path: string, force: boolean): Promise<void> => {
@@ -688,19 +782,66 @@ export const useEditorStore = create<EditorState>((set, get) => {
     }
   }
 
-  const saveDiff = async (id: string): Promise<boolean> => {
+  /** Bring an editable diff's modified side in line with `content` from disk (kept when it has unsaved edits). */
+  const applyDiskToDiff = (id: string, d: DiffEntry, content: string, force: boolean): void => {
+    if (d.modified.isDisposed() || d.diskText === null) return
+    const dirty = d.modified.getAlternativeVersionId() !== d.savedVersion
+    if (d.modified.getValue() === content) {
+      d.diskText = content
+      if (force && dirty) {
+        d.savedVersion = d.modified.getAlternativeVersionId()
+        patchTab(id, { dirty: false })
+      }
+      return
+    }
+    if (content === d.diskText && !force) return
+    if (dirty && !force) {
+      notifyConflict(d.path, () => void get().reloadDiffFromDisk(id, true))
+      return
+    }
+    applyMinimalEdits(d.modified, content)
+    d.savedVersion = d.modified.getAlternativeVersionId()
+    d.diskText = content
+    patchTab(id, { dirty: false })
+  }
+
+  const saveDiff = async (id: string, options: { auto?: boolean } = {}): Promise<boolean> => {
     const d = diffs.get(id)
     const data = get().diffData[id]
     if (!d || !data || data.readOnly) return true
+    // The modified side may be stale: the agent or a terminal command can change the file after the diff opened.
+    const disk = await readDiskText(d.path)
+    if (disk !== null && d.diskText !== null && disk !== d.diskText && disk !== d.modified.getValue()) {
+      if (options.auto) {
+        notifyAutoSaveConflict(d.path, () => void saveDiff(id))
+        return false
+      }
+      const choice = await askConflict(d.path, 'disk')
+      if (choice === 'reload') {
+        applyDiskToDiff(id, d, disk, true)
+        return true
+      }
+      if (choice === 'compare') openDiskCompare(d.path, disk, d.modified.getValue())
+      if (choice !== 'overwrite') return false
+    }
+    if (d.modified.isDisposed()) return false
+    // Never silently replace unsaved edits made in the file's own tab.
+    const entry = files.get(pathKey(d.path))
+    const entryDirty = !!entry && !entry.model.isDisposed() && entry.model.getAlternativeVersionId() !== entry.savedVersion
+    if (entry && entryDirty && entry.model.getValue() !== d.modified.getValue()) {
+      if (options.auto) return false
+      if ((await askConflict(d.path, 'dirty-tab')) !== 'overwrite') return false
+    }
+    if (d.modified.isDisposed()) return false
     const text = d.modified.getValue()
     const version = d.modified.getAlternativeVersionId()
     try {
       const stat = await atom.fs.writeFile(d.path, text)
       d.savedVersion = version
-      patchTab(id, { dirty: false })
-      const entry = files.get(pathKey(d.path))
-      if (entry && !entry.model.isDisposed() && entry.model.getValue() !== text) {
-        applyMinimalEdits(entry.model, text)
+      d.diskText = text
+      patchTab(id, { dirty: d.modified.getAlternativeVersionId() !== version })
+      if (entry && !entry.model.isDisposed()) {
+        if (entry.model.getValue() !== text) applyMinimalEdits(entry.model, text)
         entry.savedVersion = entry.model.getAlternativeVersionId()
         entry.mtimeMs = stat.mtimeMs
         updateFileDirty(entry)
@@ -740,8 +881,10 @@ export const useEditorStore = create<EditorState>((set, get) => {
           if (d.original.getValue() !== request.original) d.original.setValue(request.original)
           if (d.modified.getValue() !== request.modified) d.modified.setValue(request.modified)
           d.savedVersion = d.modified.getAlternativeVersionId()
+          d.diskText = readOnly ? null : request.modified
           set({ diffData: { ...get().diffData, [existing.id]: { ...get().diffData[existing.id], readOnly } } })
           activate(existing.id)
+          if (!readOnly) void get().reloadDiffFromDisk(existing.id)
           return
         }
       }
@@ -750,7 +893,14 @@ export const useEditorStore = create<EditorState>((set, get) => {
       const base = normalizeSlashes(path).replace(/^\/*/, '/')
       const original = monaco.editor.createModel(request.original, language, monaco.Uri.from({ scheme: 'atom-diff', path: `/${n}/original${base}` }))
       const modified = monaco.editor.createModel(request.modified, language, monaco.Uri.from({ scheme: 'atom-diff', path: `/${n}/modified${base}` }))
-      const entry: DiffEntry = { path, original, modified, savedVersion: modified.getAlternativeVersionId(), disposables: [] }
+      const entry: DiffEntry = {
+        path,
+        original,
+        modified,
+        savedVersion: modified.getAlternativeVersionId(),
+        diskText: readOnly ? null : request.modified,
+        disposables: []
+      }
       entry.disposables.push(
         modified.onDidChangeContent(() => {
           const dirty = get().diffData[id]?.readOnly === false && modified.getAlternativeVersionId() !== entry.savedVersion
@@ -761,6 +911,16 @@ export const useEditorStore = create<EditorState>((set, get) => {
       diffs.set(id, entry)
       set({ diffData: { ...get().diffData, [id]: { originalUri: original.uri.toString(), modifiedUri: modified.uri.toString(), readOnly, language } } })
       insertTab({ id, kind: 'diff', path, title, language, dirty: false, preview: false }, true)
+      // The caller read the file a moment ago; catch a change that landed in between.
+      if (!readOnly) void get().reloadDiffFromDisk(id)
+    },
+
+    reloadDiffFromDisk: async (id, force = false) => {
+      const d = diffs.get(id)
+      if (!d || d.diskText === null) return
+      const content = await readDiskText(d.path)
+      if (content === null || diffs.get(id) !== d) return
+      applyDiskToDiff(id, d, content, force)
     },
 
     closeTab: async (id) => {
@@ -848,12 +1008,12 @@ export const useEditorStore = create<EditorState>((set, get) => {
       else if (tab.kind === 'diff') await saveDiff(tab.id)
     },
 
-    saveAll: async () => {
+    saveAll: async (options = {}) => {
       const active = get().tabs.find((t) => t.id === get().activeTabId)
       for (const t of get().tabs) {
         if (!t.dirty) continue
-        if (t.kind === 'file') await get().saveFile(t.path, { format: t.id === active?.id })
-        else if (t.kind === 'diff') await saveDiff(t.id)
+        if (t.kind === 'file') await get().saveFile(t.path, { format: t.id === active?.id, auto: options.auto })
+        else if (t.kind === 'diff') await saveDiff(t.id, { auto: options.auto })
       }
     },
 
@@ -867,6 +1027,22 @@ export const useEditorStore = create<EditorState>((set, get) => {
         if (action?.isSupported()) {
           await Promise.race([action.run().catch(() => undefined), new Promise((r) => window.setTimeout(r, 2000))])
         }
+      }
+      // Never overwrite a newer version on disk (the agent or a terminal command edited the file meanwhile).
+      const disk = await findDiskConflict(path, entry.mtimeMs, entry.model.getValue())
+      if (disk !== null) {
+        if (entry.model.isDisposed()) return false
+        if (options.auto) {
+          notifyAutoSaveConflict(path, () => void get().saveFile(path))
+          return false
+        }
+        const choice = await askConflict(path, 'disk')
+        if (choice === 'reload') {
+          await reloadInternal(path, true)
+          return true
+        }
+        if (choice === 'compare' && !entry.model.isDisposed()) openDiskCompare(path, disk, entry.model.getValue())
+        if (choice !== 'overwrite' || entry.model.isDisposed()) return false
       }
       const version = entry.model.getAlternativeVersionId()
       const text = entry.model.getValue()
@@ -985,7 +1161,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
 
     closeDialog: () => {
       const d = get().dialog
-      if (d?.kind === 'confirm-unsaved') d.resolve('cancel')
+      if (d?.kind === 'confirm-unsaved' || d?.kind === 'save-conflict') d.resolve('cancel')
       else set({ dialog: null })
     },
 
@@ -1092,6 +1268,12 @@ function handleFsEvents(events: { kind: string; path: string }[]): void {
       }
       continue
     }
+    if (ev.kind === 'change' || ev.kind === 'add') {
+      // Editable diffs ("Working Tree") follow the file on disk like file tabs do.
+      for (const t of state.tabs) {
+        if (t.kind === 'diff' && state.diffData[t.id]?.readOnly === false && samePath(t.path, ev.path)) void state.reloadDiffFromDisk(t.id)
+      }
+    }
     const tab = findFileTab(state.tabs, ev.path)
     if (!tab) continue
     if (ev.kind === 'unlink') {
@@ -1121,7 +1303,7 @@ disposers.push(atom.fs.onChange(handleFsEvents))
 
 // Auto-save "onFocusChange": save everything when the window loses focus.
 const onWindowBlur = (): void => {
-  if (useSettingsStore.getState().settings.editor.autoSave === 'onFocusChange') void useEditorStore.getState().saveAll()
+  if (useSettingsStore.getState().settings.editor.autoSave === 'onFocusChange') void useEditorStore.getState().saveAll({ auto: true })
 }
 window.addEventListener('blur', onWindowBlur)
 disposers.push(() => window.removeEventListener('blur', onWindowBlur))

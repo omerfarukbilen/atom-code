@@ -30,7 +30,7 @@ const COPY: Record<LoginMode, { title: string; description: ReactNode; icon: Rea
     title: 'Create a long-lived token',
     icon: <KeyRound size={16} />,
     description:
-      'Runs the official `claude setup-token` flow. Approve access in the browser; ATOM Code captures the token and stores it encrypted for every agent session. Requires a Claude subscription.'
+      'Runs the official `claude setup-token` flow. Approve access in the browser; ATOM Code captures the token and saves it for every agent session. Requires a Claude subscription.'
   }
 }
 

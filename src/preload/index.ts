@@ -49,6 +49,7 @@ const api: AtomAPI = {
     open: (path) => invoke(IPC.workspaceOpen, path),
     getCurrent: () => invoke(IPC.workspaceGetCurrent),
     listFiles: (root) => invoke(IPC.workspaceListFiles, root),
+    manageTrust: (path) => invoke(IPC.workspaceManageTrust, path),
     onChanged: (cb) => on(IPC.workspaceChangedEvent, cb)
   },
 

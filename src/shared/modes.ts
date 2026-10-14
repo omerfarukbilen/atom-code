@@ -148,7 +148,15 @@ export const PERMISSION_POLICIES: { id: PermissionPolicy; label: string; descrip
 
 /** Shown until the CLI reports the account's real model list via supportedModels(). Values are CLI aliases. */
 export const FALLBACK_MODELS: ModelOption[] = [
-  { value: '', label: 'Default', description: 'Recommended model for your plan' },
+  {
+    value: '',
+    label: 'Default',
+    description: 'Recommended model for your plan',
+    // The default model resolves to an effort-capable model on every plan; without this the effort picker
+    // stays hidden until the CLI reports the real model list (after the first message).
+    supportsEffort: true,
+    supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max']
+  },
   {
     value: 'opus',
     label: 'Opus',

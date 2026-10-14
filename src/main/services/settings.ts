@@ -6,8 +6,18 @@ import { DEFAULT_SETTINGS, SETTINGS_VERSION } from '../../shared/defaults'
 import { IPC } from '../../shared/ipc'
 import type { AppSettings, DeepPartial } from '../../shared/types'
 import { ctx } from '../context'
+import { parseStoredSecret, type SecretName, type StoredSecret } from './secret-format'
 
-type SecretName = 'anthropicApiKey' | 'claudeOAuthToken'
+export type { SecretName } from './secret-format'
+
+/** How credentials are stored right now (shown in the account UI). */
+export interface SecretStorageState {
+  encrypted: boolean
+  backend?: string
+  file: string
+  /** Secrets kept on disk that cannot be decrypted in this session (keyring unavailable). */
+  locked: SecretName[]
+}
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -27,6 +37,8 @@ export function deepMerge<T>(base: T, patch: unknown): T {
 class SettingsService {
   private settings: AppSettings = DEFAULT_SETTINGS
   private secrets: Partial<Record<SecretName, string>> = {}
+  /** Encrypted entries the keyring of this session cannot decrypt: kept verbatim, never used. */
+  private lockedSecrets: Partial<Record<SecretName, StoredSecret>> = {}
   private listeners = new Set<(s: AppSettings) => void>()
   private writeChain: Promise<void> = Promise.resolve()
 
@@ -54,17 +66,33 @@ class SettingsService {
     }
     try {
       if (existsSync(this.secretsFile)) {
-        const raw = JSON.parse(await readFile(this.secretsFile, 'utf8')) as Record<string, string>
-        for (const [name, value] of Object.entries(raw)) {
-          if (!value) continue
+        const raw = JSON.parse(await readFile(this.secretsFile, 'utf8')) as Record<string, unknown>
+        const canDecrypt = safeStorage.isEncryptionAvailable()
+        let upgrade = false
+        for (const [key, value] of Object.entries(raw)) {
+          if (key !== 'anthropicApiKey' && key !== 'claudeOAuthToken') continue
+          const name: SecretName = key
+          const stored = parseStoredSecret(value)
+          if (!stored) continue
+          if (!stored.enc) {
+            this.secrets[name] = Buffer.from(stored.data, 'base64').toString('utf8')
+            // Saved while no keyring was available, or by an older version: encrypt it now that one is.
+            if (canDecrypt || typeof value === 'string') upgrade = true
+            continue
+          }
+          if (!canDecrypt) {
+            this.lockedSecrets[name] = stored
+            continue
+          }
           try {
-            this.secrets[name as SecretName] = safeStorage.isEncryptionAvailable()
-              ? safeStorage.decryptString(Buffer.from(value, 'base64'))
-              : Buffer.from(value, 'base64').toString('utf8')
+            this.secrets[name] = safeStorage.decryptString(Buffer.from(stored.data, 'base64'))
+            if (typeof value === 'string') upgrade = true
           } catch {
-            /* unreadable secret — ignore */
+            // Encrypted with a key this keyring does not have (another machine/profile): keep it, unused.
+            this.lockedSecrets[name] = stored
           }
         }
+        if (upgrade) await this.writeSecrets().catch(() => undefined)
       }
     } catch (err) {
       console.error('[settings] failed to read secrets', err)
@@ -100,17 +128,43 @@ class SettingsService {
     return this.secrets[name]
   }
 
+  /** Whether stored secrets are encrypted, by which backend, where, and which cannot be decrypted now. */
+  getSecretStorageState(): SecretStorageState {
+    let backend: string | undefined
+    try {
+      // Linux only: which secret store Chromium picked ("basic_text" = none).
+      if (process.platform === 'linux' && typeof safeStorage.getSelectedStorageBackend === 'function') {
+        backend = safeStorage.getSelectedStorageBackend()
+      }
+    } catch {
+      backend = undefined
+    }
+    return {
+      encrypted: safeStorage.isEncryptionAvailable(),
+      ...(backend ? { backend } : {}),
+      file: this.secretsFile,
+      locked: (Object.keys(this.lockedSecrets) as SecretName[]).filter((n) => !this.secrets[n])
+    }
+  }
+
   async setSecret(name: SecretName, value: string | null): Promise<void> {
     if (value) this.secrets[name] = value
     else delete this.secrets[name]
-    const encoded: Record<string, string> = {}
-    for (const [k, v] of Object.entries(this.secrets)) {
+    // A new value (or clearing it) replaces a locked one.
+    delete this.lockedSecrets[name]
+    await this.writeSecrets()
+  }
+
+  private async writeSecrets(): Promise<void> {
+    const encrypt = safeStorage.isEncryptionAvailable()
+    const out: Partial<Record<SecretName, StoredSecret>> = { ...this.lockedSecrets }
+    for (const [k, v] of Object.entries(this.secrets) as [SecretName, string | undefined][]) {
       if (!v) continue
-      encoded[k] = safeStorage.isEncryptionAvailable()
-        ? safeStorage.encryptString(v).toString('base64')
-        : Buffer.from(v, 'utf8').toString('base64')
+      out[k] = encrypt
+        ? { enc: true, data: safeStorage.encryptString(v).toString('base64') }
+        : { enc: false, data: Buffer.from(v, 'utf8').toString('base64') }
     }
-    await this.atomicWrite(this.secretsFile, JSON.stringify(encoded, null, 2))
+    await this.atomicWrite(this.secretsFile, JSON.stringify(out, null, 2))
   }
 
   private emit(): void {

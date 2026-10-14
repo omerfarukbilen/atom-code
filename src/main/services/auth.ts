@@ -3,7 +3,8 @@
  *
  * ATOM Code never implements OAuth itself: it drives the official Claude Code CLI bundled with the
  * Agent SDK (`claude auth status|login|logout`, `claude setup-token`) and keeps optional credentials of
- * its own (API key / OAuth token) encrypted through `settingsService`. Secrets are never logged.
+ * its own (API key / OAuth token) through `settingsService` (encrypted with the OS keyring when one is available).
+ * Secrets are never logged.
  */
 import { execFile, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
@@ -11,9 +12,10 @@ import { homedir } from 'node:os'
 import { app, ipcMain, shell } from 'electron'
 import type * as NodePty from 'node-pty'
 import { IPC } from '../../shared/ipc'
-import type { AuthMethod, AuthStatus, LoginExitEvent, LoginMode, LoginOutputEvent } from '../../shared/types'
+import type { AuthMethod, AuthStatus, LoginExitEvent, LoginMode, LoginOutputEvent, SecretStorageInfo } from '../../shared/types'
 import { ctx } from '../context'
 import { buildClaudeCommand, getClaudeVersion, resolveClaudeBinary } from './claude-binary'
+import { ensurePtySpawnHelperExecutable } from './pty-helper'
 import { settingsService } from './settings'
 import { stripAnsi } from './terminal'
 
@@ -385,8 +387,34 @@ function statusKey(s: AuthStatus): string {
     s.claudeVersion,
     s.hasStoredApiKey,
     s.hasStoredOAuthToken,
+    s.secretStorage,
     s.error
   ])
+}
+
+/** Stored-credential fields of AuthStatus: what ATOM Code holds and how it is stored. */
+function storedCredentials(): Pick<AuthStatus, 'hasStoredApiKey' | 'hasStoredOAuthToken' | 'secretStorage'> {
+  const state = settingsService.getSecretStorageState()
+  const secretStorage: SecretStorageInfo = { encrypted: state.encrypted, file: state.file }
+  if (state.backend) secretStorage.backend = state.backend
+  const locked = state.locked.map((n) => (n === 'anthropicApiKey' ? ('apiKey' as const) : ('oauthToken' as const)))
+  if (locked.length > 0) secretStorage.locked = locked
+  return {
+    hasStoredApiKey: Boolean(settingsService.getSecret('anthropicApiKey')),
+    hasStoredOAuthToken: Boolean(settingsService.getSecret('claudeOAuthToken')),
+    secretStorage
+  }
+}
+
+/** Explain a sign-in failure caused by a saved credential the keyring of this session cannot decrypt. */
+function withLockedSecretHint(status: AuthStatus): AuthStatus {
+  const locked = status.secretStorage?.locked
+  if (status.loggedIn || !locked || locked.length === 0) return status
+  const what = locked.length > 1 ? 'API key and OAuth token are' : locked[0] === 'apiKey' ? 'API key is' : 'OAuth token is'
+  const hint =
+    `Your saved ${what} encrypted with the system keyring, which is not available in this session. ` +
+    'Unlock or start the keyring (e.g. GNOME Keyring / KWallet) and restart ATOM Code, or enter it again.'
+  return { ...status, error: status.error ? `${hint}\n${status.error}` : hint }
 }
 
 function broadcast(status: AuthStatus, force: boolean): void {
@@ -397,16 +425,13 @@ function broadcast(status: AuthStatus, force: boolean): void {
 }
 
 async function probeAuthStatus(): Promise<AuthStatus> {
-  const stored = {
-    hasStoredApiKey: Boolean(settingsService.getSecret('anthropicApiKey')),
-    hasStoredOAuthToken: Boolean(settingsService.getSecret('claudeOAuthToken'))
-  }
+  const stored = storedCredentials()
   const bin = resolveClaudeBinary()
   if (!bin) {
     return { loggedIn: false, method: 'none', claudeBinary: null, ...stored, error: NOT_FOUND_MESSAGE, checkedAt: Date.now() }
   }
   const [claudeVersion, run] = await Promise.all([getClaudeVersion(bin), runClaude(bin, ['auth', 'status', '--json'], getAgentEnv())])
-  return { ...interpretAuthStatus(run), claudeBinary: bin, claudeVersion, ...stored, checkedAt: Date.now() }
+  return withLockedSecretHint({ ...interpretAuthStatus(run), claudeBinary: bin, claudeVersion, ...stored, checkedAt: Date.now() })
 }
 
 /** Fill in email / plan / organization from a live agent session's `accountInfo()` when the CLI omitted them. */
@@ -480,8 +505,7 @@ async function loadStatus(refresh: boolean): Promise<{ status: AuthStatus; curre
       loggedIn: false,
       method: 'none',
       claudeBinary: resolveClaudeBinary(),
-      hasStoredApiKey: Boolean(settingsService.getSecret('anthropicApiKey')),
-      hasStoredOAuthToken: Boolean(settingsService.getSecret('claudeOAuthToken')),
+      ...storedCredentials(),
       error: `Could not check the sign-in status: ${errorMessage(err)}`,
       checkedAt: Date.now()
     }
@@ -608,6 +632,8 @@ function loadPty(): Promise<PtyModule | null> {
     ptyModulePromise = import('node-pty')
       .then((mod: unknown): PtyModule | null => {
         const m = mod as { spawn?: unknown; default?: { spawn?: unknown } }
+        // macOS: node-pty's prebuilt spawn-helper ships without the execute bit.
+        ensurePtySpawnHelperExecutable()
         if (typeof m.spawn === 'function') return m as PtyModule
         if (m.default && typeof m.default.spawn === 'function') return m.default as PtyModule
         return null

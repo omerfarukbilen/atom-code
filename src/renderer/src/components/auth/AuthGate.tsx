@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react'
+import type { AuthStatus } from '@shared/types'
 import { AlertTriangle, ChevronDown, Eye, EyeOff, Globe, KeyRound, Lock, RefreshCw, Settings2, Sparkles, Terminal } from 'lucide-react'
 import { AtomLogo, Button, Input } from '../ui'
 import { useAuthStore } from '../../stores/auth'
@@ -8,6 +9,17 @@ import { atom } from '../../lib/api'
 import { cn } from '../../lib/cn'
 
 type Expanded = 'token' | 'apikey' | null
+
+/**
+ * How ATOM stores its own credentials, worded so it never claims encryption it does not have: without an OS
+ * keyring (Linux "basic_text") secrets are kept unencrypted in the secrets file.
+ */
+export function secretStorageText(status: AuthStatus | null | undefined): string {
+  const s = status?.secretStorage
+  if (!s) return 'Stored on this machine'
+  if (s.encrypted && s.backend !== 'basic_text') return 'Stored encrypted with the system keyring'
+  return `Stored unencrypted in ${s.file} (no system keyring is available)`
+}
 
 /** Onboarding card shown inside the agent panel while the user is signed out. */
 export function AuthGate() {
@@ -120,7 +132,7 @@ export function AuthGate() {
             <SecretForm
               kind="apikey"
               placeholder="sk-ant-api03-…"
-              hint="Stored encrypted on this machine and passed to Claude Code as ANTHROPIC_API_KEY."
+              hint={`${secretStorageText(status)} and passed to Claude Code as ANTHROPIC_API_KEY.`}
               save={(v) => atom.auth.setApiKey(v)}
               successMessage="API key saved"
             />
@@ -178,6 +190,7 @@ function OptionCard({
 }
 
 function TokenPanel({ onGenerate, disabled }: { onGenerate(): void; disabled: boolean }) {
+  const status = useAuthStore((s) => s.status)
   return (
     <div className="flex flex-col gap-3">
       <div className="text-[12px] leading-relaxed text-muted">
@@ -190,7 +203,7 @@ function TokenPanel({ onGenerate, disabled }: { onGenerate(): void; disabled: bo
       <SecretForm
         kind="token"
         placeholder="sk-ant-oat01-…"
-        hint="Stored encrypted and passed to Claude Code as CLAUDE_CODE_OAUTH_TOKEN."
+        hint={`${secretStorageText(status)} and passed to Claude Code as CLAUDE_CODE_OAUTH_TOKEN.`}
         save={(v) => atom.auth.setOAuthToken(v)}
         successMessage="Long-lived token saved"
       />

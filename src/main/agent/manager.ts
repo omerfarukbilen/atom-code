@@ -3,7 +3,7 @@
  * (see docs/ARCHITECTURE.md §5).
  */
 import { statSync } from 'node:fs'
-import { ipcMain, type IpcMainInvokeEvent } from 'electron'
+import { dialog, ipcMain, type IpcMainInvokeEvent, type MessageBoxOptions } from 'electron'
 import { deleteSession, getSessionMessages, listSessions, renameSession } from '@anthropic-ai/claude-agent-sdk'
 import type { AccountInfo, SDKSessionInfo, SessionMessage } from '@anthropic-ai/claude-agent-sdk'
 import { IPC } from '../../shared/ipc'
@@ -107,6 +107,33 @@ function rememberAccountInfo(info: AccountInfo): void {
   if (Object.keys(next).length > 0) accountInfoCache = next
 }
 
+/**
+ * A configuration change (mode, settings, sign-in…) needs a CLI restart, which stops the chat's background
+ * tasks, and the user is sending a message: ask whether to restart first.
+ */
+async function confirmRestartOverTasks(tasks: string[]): Promise<boolean> {
+  const shown = tasks.slice(0, 5).map((t) => `  • ${t.length > 120 ? `${t.slice(0, 119)}…` : t}`)
+  if (tasks.length > 5) shown.push(`  • … and ${tasks.length - 5} more`)
+  const options: MessageBoxOptions = {
+    type: 'question',
+    title: 'Background tasks are running',
+    message: 'Apply the new agent configuration before sending?',
+    detail: [
+      'A change you made (mode, settings or sign-in) takes effect when the agent restarts, and restarting stops its background tasks:',
+      ...shown,
+      '',
+      'Keep them running to send this message with the current configuration; the change then applies once they finish.'
+    ].join('\n'),
+    buttons: ['Keep Tasks Running', 'Restart and Stop Tasks'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true
+  }
+  const win = ctx.getWindow()
+  const { response } = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options)
+  return response === 1
+}
+
 function sendEvent(chatId: string, event: AgentEvent): void {
   const envelope: AgentEventEnvelope = { chatId, event }
   ctx.send(IPC.agentEvent, envelope)
@@ -171,7 +198,8 @@ async function createChat(raw: unknown): Promise<void> {
   }
   const session = new AgentSession(options, {
     emit: (event) => sendEvent(options.chatId, event),
-    onAccountInfo: rememberAccountInfo
+    onAccountInfo: rememberAccountInfo,
+    confirmRestartOverTasks
   })
   sessions.set(options.chatId, session)
   // Launch failures (no binary, bad auth…) surface as `error` events; send() retries the launch.

@@ -1,13 +1,17 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  addNotice,
   addUserMessage,
   applyHistory,
   createChatState,
   findToolCall,
+  heldCount,
   historyFromStoredMessages,
   isRunning,
   parsePartialJson,
+  patchUserItem,
+  queuedMessageCount,
   reduceAgentEvent,
   reopenPermissionRequest,
   titleFromPrompt,
@@ -638,6 +642,43 @@ test('queued messages: consumed via user_message_uuids, cleared on result', () =
   const q2 = chat.items.find((i) => i.kind === 'user' && i.uuid === 'q2')
   assert.ok(q2 && q2.kind === 'user' && !q2.queued)
   assert.equal(chat.queuedCount, 0)
+})
+
+test('held messages trail the transcript: the running turn, notices and results render above them', () => {
+  let chat = addUserMessage(newChat(), { uuid: 'u1', text: 'first' }, NOW)
+  chat = run(chat, [{ type: 'status', status: 'running' }, assistantFrame('m1', { type: 'text', text: 'working on it' })])
+  chat = addUserMessage(chat, { uuid: 'h1', text: 'follow-up', held: true }, NOW)
+  chat = addUserMessage(chat, { uuid: 'h2', text: 'and this', held: true }, NOW)
+  assert.equal(heldCount(chat), 2)
+  assert.equal(queuedMessageCount(chat), 2, 'held messages count as queued')
+  const h1 = chat.items.find((i) => i.kind === 'user' && i.uuid === 'h1')
+  assert.ok(h1 && h1.kind === 'user' && h1.queued && h1.held)
+
+  chat = run(chat, [
+    assistantFrame('m2', { type: 'text', text: 'more output' }),
+    sdk({ type: 'system', subtype: 'api_retry', attempt: 1, max_retries: 10, retry_delay_ms: 2000, error_status: 529, error: 'overloaded' }),
+    assistantFrame('m3', { type: 'text', text: 'recovered' }),
+    { type: 'error', message: 'Something broke', kind: 'unknown' },
+    sdk({ type: 'result', subtype: 'success', is_error: false, duration_ms: 10, duration_api_ms: 5, num_turns: 1, result: 'ok', stop_reason: 'end_turn', total_cost_usd: 0.01, usage: {}, permission_denials: [] })
+  ])
+  chat = addNotice(chat, { variant: 'info', text: 'local notice' }, NOW)
+  const kinds = chat.items.map((i) => (i.kind === 'user' ? `user:${i.uuid}` : i.kind === 'notice' ? `notice:${i.variant}` : i.kind))
+  assert.deepEqual(kinds, ['user:u1', 'assistant', 'assistant', 'assistant', 'notice:error', 'result', 'notice:info', 'user:h1', 'user:h2'])
+  assert.equal(chat.status, 'idle')
+  assert.equal(chat.queuedCount, 0, 'the CLI has nothing queued')
+  assert.equal(queuedMessageCount(chat), 2, 'the result does not clear held messages')
+  assert.ok(chat.items.slice(-2).every((i) => i.kind === 'user' && i.queued && i.held))
+
+  // Delivering the first held message: its reply goes between it and the one still held.
+  chat = patchUserItem(chat, 'h1', { held: false, queued: false })
+  chat = run(chat, [{ type: 'user-sent', uuid: 'h1', text: 'follow-up', images: 0 }, assistantFrame('m4', { type: 'text', text: 'reply to follow-up' })])
+  assert.deepEqual(
+    chat.items.slice(-3).map((i) => (i.kind === 'user' ? `user:${i.uuid}` : i.kind)),
+    ['user:h1', 'assistant', 'user:h2']
+  )
+  assert.equal(heldCount(chat), 1)
+  const sent = chat.items.find((i) => i.kind === 'user' && i.uuid === 'h1')
+  assert.ok(sent && sent.kind === 'user' && !sent.pending && !sent.queued)
 })
 
 test('stored history converts to transcript with tool results, todos and commands', () => {

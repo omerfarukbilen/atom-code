@@ -178,7 +178,7 @@ export function AgentSection() {
         <SettingRow label="Max turns" keywords="limit turns iterations" description="Stop a request after this many agentic turns.">
           <NullableNumberField value={agent.maxTurns} defaultValue={50} min={1} onCommit={(v) => setAgent({ maxTurns: v })} />
         </SettingRow>
-        <SettingRow label="Max budget" keywords="cost usd dollars limit budget" description="Stop a request when its estimated cost exceeds this amount (USD).">
+        <SettingRow label="Max budget" keywords="cost usd dollars limit budget" description="Per-chat spending limit (USD, estimated). The agent stops once a chat has spent this much, including across agent restarts.">
           <NullableNumberField value={agent.maxBudgetUsd} defaultValue={5} min={0.1} step={0.5} prefix="$" onCommit={(v) => setAgent({ maxBudgetUsd: v })} />
         </SettingRow>
       </SettingGroup>

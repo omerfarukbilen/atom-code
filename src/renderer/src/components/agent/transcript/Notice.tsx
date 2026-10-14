@@ -206,7 +206,12 @@ export const NoticeView = memo(function NoticeView({ item }: { item: NoticeItem 
           <Info size={13} className="mt-[2px] shrink-0 text-info" />
           <div className="min-w-0 flex-1">
             <div className="selectable break-words">{item.text}</div>
-            {item.detail && <div className="selectable mt-0.5 break-words text-[11.5px] text-subtle">{item.detail}</div>}
+            {item.detail &&
+              (item.detailMarkdown ? (
+                <Markdown content={item.detail} className="mt-1 !text-[12px]" />
+              ) : (
+                <div className="selectable mt-0.5 whitespace-pre-wrap break-words text-[11.5px] text-subtle">{item.detail}</div>
+              ))}
           </div>
         </div>
       )

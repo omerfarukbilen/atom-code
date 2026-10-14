@@ -11,6 +11,7 @@ import { BlockList } from './Blocks'
 import { TranscriptContext, type TranscriptContextValue } from './context'
 import { NoticeView } from './Notice'
 import { PendingRequests } from './PendingCards'
+import { RenderBoundary } from './RenderBoundary'
 import { ResultFooter } from './ResultFooter'
 import { StreamingIndicator } from './StreamingIndicator'
 import { UserMessage } from './UserMessage'
@@ -150,22 +151,33 @@ const Turn = memo(function Turn({ items, deferred }: { items: TranscriptItem[]; 
           return (
             <div key={seg.key} className="flex min-w-0 flex-col gap-1.5">
               {seg.items.map((a) => (
-                <AssistantMessage key={a.id} item={a} />
+                <RenderBoundary key={a.id} what="this response" resetKey={a}>
+                  <AssistantMessage item={a} />
+                </RenderBoundary>
               ))}
             </div>
           )
         }
         const it = seg.item
+        let node: ReactNode
         switch (it.kind) {
           case 'user':
-            return <UserMessage key={it.id} item={it} />
+            node = <UserMessage item={it} />
+            break
           case 'notice':
-            return <NoticeView key={it.id} item={it} />
+            node = <NoticeView item={it} />
+            break
           case 'result':
-            return <ResultFooter key={it.id} item={it} copyText={copyText || undefined} />
+            node = <ResultFooter item={it} copyText={copyText || undefined} />
+            break
           default:
             return null
         }
+        return (
+          <RenderBoundary key={it.id} what="this message" resetKey={it}>
+            {node}
+          </RenderBoundary>
+        )
       })}
     </section>
   )

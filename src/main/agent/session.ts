@@ -61,7 +61,20 @@ import {
   resolveModel,
   resolvePermissionMode
 } from './options'
-import { renderUserPrompt } from './prompt'
+import { renderUserPromptBlocks } from './prompt'
+import {
+  accountCost,
+  applySessionGrants,
+  budgetExhausted,
+  formatUsd,
+  orphanedTaskNotification,
+  reconcileOutstanding,
+  remainingBudget,
+  replaceBackgroundTasks,
+  type BackgroundTaskInfo
+} from './session-logic'
+import { findProjectConfig } from './trust'
+import { ensureWorkspaceTrust } from './workspace-trust'
 
 export type AgentErrorKind = Extract<AgentEvent, { type: 'error' }>['kind']
 
@@ -70,6 +83,12 @@ export interface AgentSessionDeps {
   emit: (event: AgentEvent) => void
   /** Called once per session with the account the CLI is signed in with. */
   onAccountInfo?: (info: AccountInfo) => void
+  /**
+   * A configuration change is waiting to restart the CLI, which would stop these background tasks, and
+   * the user is sending a message. Resolve true to restart now (stopping them), false to keep them and
+   * send with the current configuration. Without it the tasks are kept.
+   */
+  confirmRestartOverTasks?: (tasks: string[]) => Promise<boolean>
 }
 
 const EFFORT_VALUES: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
@@ -77,6 +96,12 @@ const POLICY_VALUES: readonly PermissionPolicy[] = PERMISSION_POLICIES.map((p) =
 const STDERR_FLUSH_INTERVAL_MS = 100
 const STDERR_MAX_BUFFER = 64_000
 const RESTART_GRACE_MS = 2500
+/** How long a deferred restart waits for the end of a turn's tail (idle state change, context usage). */
+const TURN_TAIL_GRACE_MS = 1500
+/** …and for the prompt suggestion, which takes an extra model call. send() cuts either wait short. */
+const TURN_TAIL_SUGGESTION_GRACE_MS = 5000
+/** Task statuses after which a task is no longer running. */
+const ENDED_TASK_STATUSES = new Set(['completed', 'failed', 'stopped', 'killed'])
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Push queue (streaming input)
@@ -427,6 +452,26 @@ export class AgentSession {
   private readonly pending = new Map<string, PendingPermission>()
   /** Uuids of sent user messages whose turn has not produced a `result` yet (oldest first). */
   private readonly outstanding = new Set<string>()
+  /**
+   * "Always allow" rules (written to .claude/settings.local.json) would take effect: the workspace is
+   * trusted, or it has no project configuration yet (the next launch then asks to trust it). Decided at launch.
+   */
+  private persistentRulesUsable = false
+  /** Live background tasks (Bash run_in_background, backgrounded subagents) of the current CLI process. */
+  private readonly backgroundTasks = new Map<string, BackgroundTaskInfo>()
+  /** tool_use id of every task the current CLI started (to join `background_tasks_changed` entries). */
+  private readonly taskToolUses = new Map<string, string>()
+  /** The user chose to keep background tasks over applying the pending restart (until the next change). */
+  private restartDeferredByUser = false
+  /** Pending wait before a deferred restart (see restartAfterTurnTail). */
+  private tailDrain: { kind: 'turn' | 'tasks'; expectSuggestion: boolean; finish: () => void } | null = null
+  /** The current `idle` follows a turn's result (its tail — suggestion, idle state — is still coming). */
+  private idleAfterResult = false
+  /** Rules / directories the user allowed "for this chat": the CLI keeps them in memory only. */
+  private readonly sessionAllowRules = new Set<string>()
+  private readonly sessionDirectories = new Set<string>()
+  /** Estimated spend of this chat across CLI restarts (the per-chat `maxBudgetUsd`). */
+  private cost = { spent: 0, processTotal: 0 }
 
   private stderrBuffer = ''
   private stderrTimer: ReturnType<typeof setTimeout> | null = null
@@ -489,6 +534,8 @@ export class AgentSession {
     this.q = null
     this.input = null
     this.denyAllPending('The chat was closed.', true)
+    this.cancelTailDrain()
+    this.orphanBackgroundTasks('Stopped: the chat was closed.')
     input?.close()
     try {
       q?.close()
@@ -509,6 +556,10 @@ export class AgentSession {
     await this.stopCurrent()
     this.sessionId = null
     this.forkPending = false
+    // A new conversation: "for this chat" grants and the spend belong to the deleted one.
+    this.sessionAllowRules.clear()
+    this.sessionDirectories.clear()
+    this.cost = { spent: 0, processTotal: 0 }
     this.setStatus('closed')
   }
 
@@ -520,24 +571,39 @@ export class AgentSession {
       (img) => isRecord(img) && typeof img.data === 'string' && img.data.length > 0 && typeof img.mediaType === 'string'
     )
     const settings = settingsService.get()
-    const text = renderUserPrompt(msg, {
+    // The <atom_context> preamble travels as its own text block before the user's text: Claude Code
+    // takes the session's first/last prompt (History titles, search) from the first text block that
+    // does not start with a tag, and treats the last text block as the input (@mentions, commands).
+    const blocks = renderUserPromptBlocks(msg, {
       workspace: this.workspace,
       includeActiveEditor: settings.agent.autoIncludeActiveFile
-    })
+    }).filter((b) => b.trim())
+    const text = blocks.join('\n\n')
     if (!text.trim() && images.length === 0) throw new Error('Cannot send an empty message.')
+    const budget = settings.agent.maxBudgetUsd
+    if (budgetExhausted(budget, this.cost.spent)) {
+      throw new Error(
+        `This chat reached its spending limit of ${formatUsd(budget ?? 0)} (about ${formatUsd(this.cost.spent)} so far). Raise or clear the limit in Settings, or start a new chat.`
+      )
+    }
 
+    // A restart waiting for the previous turn's tail must not run after (and be blocked by) this message.
+    this.flushTailDrain()
+    if (this.restarting) await this.restarting
+    await this.applyRestartBlockedByTasks()
     await this.ensureRunning()
     const input = this.input
     if (!input) throw new Error(this.lastError ?? 'The agent is not running.')
 
+    const textBlocks = blocks.map((b) => ({ type: 'text' as const, text: b }))
     const content: SDKUserMessage['message']['content'] =
-      images.length > 0
+      images.length > 0 || textBlocks.length > 1
         ? [
             ...images.map((img) => ({
               type: 'image' as const,
               source: { type: 'base64' as const, media_type: img.mediaType, data: img.data }
             })),
-            ...(text.trim() ? [{ type: 'text' as const, text }] : [])
+            ...textBlocks
           ]
         : text
 
@@ -615,7 +681,7 @@ export class AgentSession {
 
     let sessionMode: PermissionPolicy | null = null
     if (kind === 'tool' && response.scope !== 'once' && pending.suggestions.length > 0) {
-      // The renderer cannot see `suppressAlwaysAllowRule`: downgrade "always" to this chat only.
+      // Defense in depth (the request carries `suppressAlwaysAllow`): downgrade "always" to this chat only.
       const persistent = response.scope === 'always' && !pending.suppressAlways
       const updates: PermissionUpdate[] = []
       for (const s of pending.suggestions) {
@@ -628,6 +694,8 @@ export class AgentSession {
         }
       }
       result.updatedPermissions = updates
+      // The CLI forgets session rules when it restarts (mode switch, settings change…): re-apply them.
+      applySessionGrants(this.sessionAllowRules, this.sessionDirectories, updates)
     }
 
     // Approving ExitPlanMode always leaves plan mode in the CLI; without an explicit policy keep the
@@ -821,9 +889,15 @@ export class AgentSession {
   private async launch(): Promise<void> {
     const gen = ++this.generation
     this.restartPending = false
+    this.restartDeferredByUser = false
     this.lastError = null
     this.turnErrors.clear()
     this.setStatus('starting')
+
+    // Decide (asking the user once per app run) before anything reads the project's configuration.
+    // Read the settings afterwards: trusting the folder updates them.
+    const trusted = await ensureWorkspaceTrust(this.workspace)
+    if (gen !== this.generation || this.disposed) return
 
     const settings = settingsService.get()
     const mode = this.currentMode()
@@ -837,7 +911,7 @@ export class AgentSession {
 
     let options: Options
     try {
-      const projectRules = await readProjectRules(this.workspace)
+      const projectRules = await readProjectRules(this.workspace, trusted)
       if (gen !== this.generation || this.disposed) return
       this.projectRules = projectRules
       options = await buildQueryOptions({
@@ -848,7 +922,11 @@ export class AgentSession {
         model: this.model,
         effort: this.effort,
         permission,
+        trusted,
         projectRules,
+        sessionAllowRules: [...this.sessionAllowRules],
+        sessionDirectories: [...this.sessionDirectories],
+        maxBudgetUsd: remainingBudget(settings.agent.maxBudgetUsd, this.cost.spent),
         resume,
         forkSession: this.forkPending,
         title: this.title,
@@ -868,6 +946,11 @@ export class AgentSession {
 
     this.runningSignature = computeConfigSignature(mode, settings, this.workspace, this.projectRules)
     this.bypassAllowed = options.allowDangerouslySkipPermissions === true
+    this.persistentRulesUsable = trusted || findProjectConfig(this.workspace).length === 0
+    // A resumed session continues from the cost total its transcript saved.
+    this.cost = { spent: this.cost.spent, processTotal: this.cost.spent }
+    this.backgroundTasks.clear()
+    this.taskToolUses.clear()
 
     const input = new PushQueue<SDKUserMessage>()
     let q: Query
@@ -922,22 +1005,29 @@ export class AgentSession {
   private scheduleRestart(): void {
     if (this.disposed) return
     if (!this.q && !this.starting) return // nothing running: the next launch reads the new config
-    if (this.isBusy() || !this.isQuiescent() || this.starting) {
+    // A new change: ask again before it stops background tasks.
+    this.restartDeferredByUser = false
+    // Restarting the CLI stops its background tasks (dev servers, watchers, subagents): wait for them to
+    // finish, or for the user's next message, which asks first (applyRestartBlockedByTasks).
+    if (this.isBusy() || !this.isQuiescent() || this.starting || this.backgroundTasks.size > 0) {
       this.restartPending = true
       return
     }
     void this.restart()
   }
 
-  private restart(): Promise<void> {
+  /** `force`: stop live background tasks too (the user confirmed). */
+  private restart(force = false): Promise<void> {
     if (this.restarting) return this.restarting
     this.restartPending = false
+    this.cancelTailDrain()
     const run = (async (): Promise<void> => {
       await Promise.resolve()
       if (this.starting) await this.starting.catch(() => undefined)
       if (this.disposed) return
-      if (this.q && !this.isQuiescent()) {
-        // A message slipped in: never kill a turn, apply the change once it is over.
+      if (this.q && (this.isBusy() || !this.isQuiescent() || (!force && this.backgroundTasks.size > 0))) {
+        // A message slipped in (or the CLI started a turn of its own, or background work is running):
+        // never kill it, apply the change once it is over.
         this.restartPending = true
         return
       }
@@ -966,6 +1056,8 @@ export class AgentSession {
     this.input = null
     this.denyAllPending('The agent is restarting.')
     this.outstanding.clear()
+    this.cancelTailDrain()
+    this.orphanBackgroundTasks('Stopped: the agent restarted to apply a new configuration.')
     input?.close()
     if (!q) return
     let timer: ReturnType<typeof setTimeout> | null = null
@@ -975,6 +1067,116 @@ export class AgentSession {
       q.close()
     } catch {
       /* already gone */
+    }
+  }
+
+  // ── internals: deferred restarts, background tasks ──────────────────────────
+
+  /**
+   * Run a pending restart once the turn's tail is in: the context-usage refresh, the idle state change
+   * and the prompt suggestion arrive after the result, and stopping the CLI first would drop them.
+   * send() cuts the wait short (flushTailDrain); restart() re-checks that the session is still idle.
+   */
+  private restartAfterTurnTail(kind: 'turn' | 'tasks', expectSuggestion = false): void {
+    if (this.disposed) return
+    if (this.tailDrain) {
+      // A turn ended while waiting for a background task's notification turn: wait for that turn's tail instead.
+      if (kind === 'tasks' || this.tailDrain.kind === 'turn') return
+      this.cancelTailDrain()
+    }
+    const q = this.q
+    const gen = this.generation
+    let finish!: () => void
+    const tail = new Promise<void>((resolveTail) => {
+      finish = resolveTail
+    })
+    const drain = { kind, expectSuggestion, finish: () => finish() }
+    this.tailDrain = drain
+    const usage = q ? this.refreshContextUsage(q, gen) : Promise.resolve()
+    let timer: ReturnType<typeof setTimeout> | null = null
+    // The grace period bounds the whole wait, including a context-usage request that never answers.
+    const timeout = new Promise<void>((resolveTimeout) => {
+      timer = setTimeout(resolveTimeout, kind === 'turn' && expectSuggestion ? TURN_TAIL_SUGGESTION_GRACE_MS : TURN_TAIL_GRACE_MS)
+    })
+    void Promise.race([Promise.all([tail, usage]), timeout]).then(() => {
+      if (timer) clearTimeout(timer)
+      if (this.tailDrain !== drain) return // cancelled or flushed
+      this.tailDrain = null
+      if (!this.disposed && this.restartPending && this.generation === gen) void this.restart()
+    })
+  }
+
+  /** Apply a restart that waits for a turn's tail right away (the user is sending a message). */
+  private flushTailDrain(): void {
+    if (!this.tailDrain) return
+    this.cancelTailDrain()
+    if (this.restartPending && !this.disposed) void this.restart()
+  }
+
+  private cancelTailDrain(): void {
+    const drain = this.tailDrain
+    if (!drain) return
+    this.tailDrain = null
+    drain.finish()
+  }
+
+  /**
+   * A configuration change is waiting only because background tasks are running, and the user is about
+   * to send a message (which would otherwise run with the old configuration): ask whether to restart now.
+   */
+  private async applyRestartBlockedByTasks(): Promise<void> {
+    if (!this.restartPending || this.restartDeferredByUser || this.disposed) return
+    if (!this.q || this.starting || this.isBusy() || !this.isQuiescent() || this.backgroundTasks.size === 0) return
+    let restartNow = false
+    try {
+      restartNow = (await this.deps.confirmRestartOverTasks?.(this.backgroundTaskLabels())) === true
+    } catch {
+      restartNow = false
+    }
+    if (this.disposed || !this.restartPending) return
+    if (!restartNow) {
+      this.restartDeferredByUser = true
+      return
+    }
+    await this.restart(true)
+  }
+
+  private backgroundTaskLabels(): string[] {
+    return [...this.backgroundTasks.entries()].map(([id, info]) => info.description || `Task ${id}`)
+  }
+
+  private addBackgroundTask(taskId: string, description?: string): void {
+    if (!taskId) return
+    const info: BackgroundTaskInfo = { ...this.backgroundTasks.get(taskId) }
+    const toolUseId = this.taskToolUses.get(taskId)
+    if (toolUseId) info.toolUseId = toolUseId
+    if (description?.trim()) info.description = description.trim()
+    this.backgroundTasks.set(taskId, info)
+  }
+
+  private removeBackgroundTask(taskId: string): void {
+    if (this.backgroundTasks.delete(taskId)) this.afterBackgroundTasksChanged()
+  }
+
+  /** The last background task ended: a restart that waited for it can run (after the CLI's notification turn). */
+  private afterBackgroundTasksChanged(): void {
+    if (this.backgroundTasks.size > 0 || !this.restartPending || this.disposed) return
+    if (this.status !== 'idle' || !this.isQuiescent()) return // applied when the running turn ends
+    // The CLI reports a finished task to the model in a turn of its own; give it a moment to start.
+    this.restartAfterTurnTail('tasks')
+  }
+
+  /**
+   * The CLI that ran the background tasks is going away (restart, exit, close), and they die with it.
+   * Report each as stopped so its card stops spinning (and its Stop button is not sent to a new CLI
+   * that never knew the task).
+   */
+  private orphanBackgroundTasks(summary: string): void {
+    const tasks = [...this.backgroundTasks.entries()]
+    this.backgroundTasks.clear()
+    this.taskToolUses.clear()
+    for (const [taskId, info] of tasks) {
+      this.emit({ type: 'sdk', message: orphanedTaskNotification(taskId, info, summary, this.sessionId ?? '', randomUUID()) })
     }
   }
 
@@ -1003,6 +1205,8 @@ export class AgentSession {
     this.restartPending = false
     this.outstanding.clear()
     this.denyAllPending('The agent session ended.')
+    this.cancelTailDrain()
+    this.orphanBackgroundTasks('Stopped: the agent process ended.')
     this.flushStderr()
     if (failure && !isAbortError(failure)) {
       this.fail(failure, 'process')
@@ -1036,6 +1240,10 @@ export class AgentSession {
         break
       case 'rate_limit_event':
         if (message.rate_limit_info) this.emit({ type: 'rate-limit', info: mapRateLimit(message.rate_limit_info) })
+        break
+      case 'prompt_suggestion':
+        // The last frame of a turn's tail: a deferred restart may go ahead now.
+        if (this.tailDrain?.kind === 'turn') this.tailDrain.finish()
         break
       case 'auth_status':
         if (message.error) {
@@ -1079,6 +1287,25 @@ export class AgentSession {
         else if (message.state === 'requires_action') this.setStatus('awaiting-input')
         // A late `idle` from the previous turn must not mask a message sent since then.
         else if (message.state === 'idle' && this.isQuiescent()) this.setStatus('idle')
+        if (message.state === 'idle' && this.tailDrain?.kind === 'turn' && !this.tailDrain.expectSuggestion) this.tailDrain.finish()
+        break
+      case 'task_started':
+        if (message.tool_use_id) this.taskToolUses.set(message.task_id, message.tool_use_id)
+        // (A task that starts in the background may already be in the level set: add its tool_use id.)
+        if (message.is_backgrounded === true || this.backgroundTasks.has(message.task_id)) {
+          this.addBackgroundTask(message.task_id, message.description)
+        }
+        break
+      case 'task_updated':
+        if (message.patch?.is_backgrounded === true) this.addBackgroundTask(message.task_id, message.patch.description)
+        if (message.patch?.status && ENDED_TASK_STATUSES.has(message.patch.status)) this.removeBackgroundTask(message.task_id)
+        break
+      case 'task_notification':
+        this.removeBackgroundTask(message.task_id)
+        break
+      case 'background_tasks_changed':
+        replaceBackgroundTasks(this.backgroundTasks, message.tasks, this.taskToolUses)
+        this.afterBackgroundTasksChanged()
         break
       case 'commands_changed':
         if (Array.isArray(message.commands)) {
@@ -1119,8 +1346,16 @@ export class AgentSession {
     }
 
     this.interruptRequested = false
+    this.cost = accountCost(this.cost, message.total_cost_usd)
     this.markAnswered(message)
-    if (this.isQuiescent()) this.setStatus('idle')
+    if (this.isQuiescent()) {
+      this.idleAfterResult = true
+      try {
+        this.setStatus('idle')
+      } finally {
+        this.idleAfterResult = false
+      }
+    }
     void this.refreshContextUsage(q, gen)
   }
 
@@ -1131,14 +1366,7 @@ export class AgentSession {
       : message.user_message_uuid
         ? [message.user_message_uuid]
         : null
-    if (answered && answered.length > 0) {
-      for (const uuid of answered) this.outstanding.delete(uuid)
-    } else if ((message.queued_turn_count ?? 0) === 0) {
-      this.outstanding.clear()
-    } else {
-      const oldest = this.outstanding.values().next()
-      if (!oldest.done) this.outstanding.delete(oldest.value)
-    }
+    reconcileOutstanding(this.outstanding, answered, message.queued_turn_count)
   }
 
   /** No turn running or queued and no prompt waiting for the user. */
@@ -1219,6 +1447,10 @@ export class AgentSession {
     if (reason.length > 0) request.decisionReason = reason.join(' — ')
     if (options.blockedPath) request.blockedPath = options.blockedPath
     if (suggestions.length > 0) request.suggestions = toIpcSafe(suggestions) as unknown[]
+    if (options.defaultToNo === true) request.defaultToNo = true
+    // A folder the user did not trust never loads .claude/settings.local.json: an "always" rule would not stick.
+    const suppressAlways = options.suppressAlwaysAllowRule === true || !this.persistentRulesUsable
+    if (suppressAlways) request.suppressAlwaysAllow = true
 
     return new Promise<PermissionResult>((resolvePermission) => {
       const onAbort = (): void => {
@@ -1228,7 +1460,7 @@ export class AgentSession {
         request,
         input,
         suggestions,
-        suppressAlways: options.suppressAlwaysAllowRule === true,
+        suppressAlways,
         settle: (result) => {
           options.signal.removeEventListener('abort', onAbort)
           resolvePermission(result)
@@ -1336,7 +1568,10 @@ export class AgentSession {
     if (this.status === status && detail === undefined) return
     this.status = status
     this.emit(detail === undefined ? { type: 'status', status } : { type: 'status', status, detail })
-    if (status === 'idle' && this.restartPending && !this.disposed) void this.restart()
+    if (status === 'idle' && this.restartPending && !this.disposed) {
+      if (this.idleAfterResult) this.restartAfterTurnTail('turn', settingsService.get().agent.promptSuggestions)
+      else void this.restart()
+    }
   }
 
   private emit(event: AgentEvent): void {

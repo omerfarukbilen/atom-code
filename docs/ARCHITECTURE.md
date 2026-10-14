@@ -99,7 +99,10 @@ Each service file exports `registerXxxIpc()` (called from `src/main/index.ts`) p
 ### fs.ts
 - readDir: entries sorted dirs first then case-insensitive name; hide entries matching `settings.filesExclude` names
   (but always show dotfiles like `.env`, `.github`). readFile: detect binary (NUL byte in first 8 KB); images ≤10 MB →
-  base64; text >5 MB → `tooLarge`. writeFile returns `FileStat`. createFile/createDir (recursive, error if exists),
+  base64; text >5 MB → `tooLarge`. Text is decoded as strict UTF-8 (a leading BOM is remembered); invalid UTF-8 is
+  read as Windows-1252. `FileContent.textEncoding` reports it and main remembers it per path, so writeFile re-encodes
+  the text the same way (BOM included; a character the encoding cannot store fails the save instead of corrupting
+  the file). writeFile returns `FileStat`. createFile/createDir (recursive, error if exists),
   rename (create parent dirs), delete → `shell.trashItem` (fallback `rm -r`), stat, copy (recursive).
 - Watcher: chokidar v5 on the workspace root, `ignoreInitial`, ignore `.git/objects`, `node_modules`, `dist`, `out`,
   `.next`, `target`, `__pycache__`; batch events for ~100 ms and send `IPC.fsChangeEvent` with `FsChangeEvent[]`.
@@ -152,6 +155,8 @@ ATOM Code never implements OAuth itself. It drives the **official Claude Code CL
   platformKey + '/claude' + ext)` (platformKey: `darwin-arm64`, `darwin-x64`, `linux-x64`, `linux-arm64`,
   `linux-x64-musl`, `linux-arm64-musl`, `win32-x64`, `win32-arm64`; try musl variants on linux as fallback), passed
   through `unpackedPath()`; else `claude` found on PATH. `getClaudeVersion(bin)` → `<bin> --version` (cached).
+  On macOS (and Linux desktop launches) main adopts the login shell's PATH at startup (services/shell-env.ts) so
+  MCP servers, git hooks and the terminal find Homebrew/nvm/volta binaries.
 - `auth.ts`:
   - `getAuthStatus(refresh)` → runs `<claude> auth status --json` (env from `getAgentEnv()`), parses
     `{loggedIn, authMethod, apiProvider, email?, orgName?, subscriptionType?}` defensively (unknown keys ignored), maps
@@ -167,6 +172,11 @@ ATOM Code never implements OAuth itself. It drives the **official Claude Code CL
     `/sk-ant-oat[0-9A-Za-z_\-]+/` and store it with `settingsService.setSecret('claudeOAuthToken', token)` — never log it.
   - `writeLogin`, `cancelLogin` (kill pty), `setApiKey`, `setOAuthToken` (stored via `settingsService.setSecret`),
     `logout` → `claude auth logout` + clear stored secrets.
+  - Stored secrets (`<userData>/secrets.json`, mode 0600): each entry records whether it was encrypted with the OS
+    keyring (`safeStorage`) or stored plainly because no keyring was available (e.g. Linux `basic_text`).
+    `AuthStatus.secretStorage` reports `encrypted`, the Linux backend, the file and `locked` entries (encrypted with a
+    keyring that is not available now: kept, never exported). The UI must only say "encrypted" when
+    `secretStorage.encrypted` is true.
   - Export `getAgentEnv(): Record<string, string>` = `process.env` + `ANTHROPIC_API_KEY` if an API key is stored, else
     `CLAUDE_CODE_OAUTH_TOKEN` if a token is stored (if neither, inherit the CLI's own login in `~/.claude`).
     Also sets `CLAUDE_AGENT_SDK_CLIENT_APP`. `disposeAuth()` kills login ptys.
@@ -191,16 +201,28 @@ backed by a push queue), so follow-ups, interrupt, `setPermissionMode`, `setMode
     "invalid api key", "/login") → `kind:'auth'`.
   - Iterator ends/throws → status `closed`/`error`. Restartable: `send()` on a closed session restarts it with
     `resume: sessionId`.
-- `send(OutgoingUserMessage)`: render attachments into the prompt (prompt.ts `renderUserPrompt`), build
+- `send(OutgoingUserMessage)`: render attachments into the prompt (prompt.ts `renderUserPromptBlocks`), build
   `SDKUserMessage` `{type:'user', message:{role:'user', content}, parent_tool_use_id:null, uuid: msg.uuid,
-  session_id: '', origin:{kind:'human'}, priority?}` where content is a string or `[...imageBlocks, {type:'text'}]`;
-  emit `{type:'user-sent'}`; status → running.
+  session_id: '', origin:{kind:'human'}, priority?}` where content is a string or `[...imageBlocks, ...textBlocks]`
+  (the `<atom_context>` preamble is its own text block before the user's text, see prompt.ts);
+  emit `{type:'user-sent'}`; status → running. Refused when the chat reached its spending limit.
+- Restarts (launch-only configuration changed: mode, settings, trust, credentials): never while a turn runs or is
+  queued; after a turn they wait for its tail (context usage, idle state, prompt suggestion — send() cuts the wait
+  short). Background tasks (`background_tasks_changed` / `task_*`) die with the CLI, so a restart waits for them; a
+  message sent meanwhile asks the user (restart and stop them, or keep them and send with the current
+  configuration). Whenever the CLI is replaced or exits, live background tasks are reported as stopped (synthetic
+  `task_notification`) so their cards settle.
+- Per-chat state that outlives a CLI process: "Allow for this chat" grants (session-destination rules and
+  directories, re-applied as `allowedTools` / `additionalDirectories` on every launch) and the estimated spend
+  (`maxBudgetUsd` is a per-chat limit: each launch gets what is left of it).
 - Permissions — `canUseTool(toolName, input, {signal, suggestions, title, displayName, decisionReason, blockedPath, toolUseID})`:
   - Create a `PermissionRequest` (`kind` = `plan` for `ExitPlanMode`, `question` for `AskUserQuestion`, else `tool`),
     emit it, status `awaiting-input`, await the renderer's `PermissionResponse` (or `signal` abort → deny).
   - allow once → `{behavior:'allow', updatedInput: response.updatedInput ?? input}`; session → plus
     `updatedPermissions: suggestions` with `destination:'session'`; always → suggestions with
-    `destination:'localSettings'`. Plan approval with `nextPermission` → after allowing, call
+    `destination:'localSettings'` (downgraded to `session` when the SDK sets `suppressAlwaysAllowRule` or the
+    folder has project configuration the user did not trust; the request then carries `suppressAlwaysAllow`, and `defaultToNo` when the SDK asks
+    for no one-key approval). Plan approval with `nextPermission` → after allowing, call
     `q.setPermissionMode(nextPermission)` and emit `mode-changed`. deny → `{behavior:'deny', message: response.message
     || 'The user declined this action.', interrupt}`.
   - Emit `permission-resolved`. Pending requests are denied on interrupt/close.
@@ -215,7 +237,15 @@ backed by a push queue), so follow-ups, interrupt, `setPermissionMode`, `setMode
 ### options.ts — `buildQueryOptions(params)` → SDK `Options`
 - `cwd: workspace`, `pathToClaudeCodeExecutable: resolveClaudeBinary()`, `env: getAgentEnv()`.
 - `systemPrompt: { type:'preset', preset:'claude_code', append: buildSystemAppend(...), snapshot: false }`.
-- `settingSources`: `['project','local']` plus `'user'` when `settings.agent.loadUserSettings` (loads CLAUDE.md, user/project skills).
+- `settingSources`: `['project','local']` (only for a **trusted** workspace) plus `'user'` when
+  `settings.agent.loadUserSettings` (loads CLAUDE.md, user/project skills). Workspace trust (agent/trust.ts,
+  agent/workspace-trust.ts): repository-provided Claude Code configuration runs commands without any permission prompt
+  (hooks, `env`/`apiKeyHelper`/`statusLine` in `.claude/settings*.json`, `.mcp.json` stdio servers), so it only loads
+  for folders listed in `settings.trustedWorkspaces`. Before the first launch in an untrusted folder that has such
+  configuration the user is asked once per app run (native dialog; Agent ▸ Workspace Trust… or
+  `atom.workspace.manageTrust()` changes it later).
+  Untrusted: no `project`/`local` sources, `strictMcpConfig: true` (only ATOM's own MCP servers), no ATOM.md. Trust is
+  part of the config signature, so trusting/revoking restarts idle chats.
 - `plugins: [{ type:'local', path: ctx.pluginDir }]`, `skills: await getEnabledSkillsOption(workspace)`.
 - `permissionMode`: `'plan'` if `mode.forcedPermissionMode === 'plan'` else the chat policy; `allowDangerouslySkipPermissions:
   true` only when policy is `bypassPermissions`. `canUseTool` from the session.
@@ -225,7 +255,10 @@ backed by a push queue), so follow-ups, interrupt, `setPermissionMode`, `setMode
 - `model` (omit when ''), `effort` (omit when 'auto'), `thinking: {type:'adaptive', display: settings.agent.thinkingDisplay}`
   only when the SDK type allows `display` on adaptive (check `ThinkingAdaptive` in sdk.d.ts), `includePartialMessages: true`,
   `forwardSubagentText: true`, `agentProgressSummaries: true`, `enableFileCheckpointing: settings.agent.enableCheckpoints`,
-  `promptSuggestions`, `maxTurns`/`maxBudgetUsd` when set, `sandbox` when enabled (`{enabled:true, failIfUnavailable:false}`).
+  `promptSuggestions`, `maxTurns` when set, `maxBudgetUsd` = what is left of the per-chat budget, `sandbox` when
+  enabled (`{enabled:true, failIfUnavailable:false}`). Custom Claude Code paths that the SDK cannot spawn itself
+  (`.js` entry points, unresolvable Windows `.cmd` shims) get a `spawnClaudeCodeProcess` (claude-binary.ts); npm
+  `.cmd` shims are resolved to their target.
 - `mcpServers`: `{ 'atom-ide': createIdeMcpServer(chatId) }` + enabled `settings.mcpServers` converted to SDK configs.
 - `agents`: none here (subagents ship in the plugin). `resume`/`forkSession`/`title` when given.
 - `stderr: (d) => emit({type:'stderr', data: d})` (rate-limited).
@@ -237,10 +270,14 @@ backed by a push queue), so follow-ups, interrupt, `setPermissionMode`, `setMode
   `path:line` references are clickable — always cite code that way; use the `atom-ide` tools to see open editors,
   the current selection, diagnostics (compiler/linter errors) and the integrated terminal; prefer the bundled `atom:*`
   skills when they fit; keep answers concise, use GitHub-flavoured markdown." + mode.systemPrompt + mode skill hints +
-  `settings.agent.customInstructions` + contents of `<workspace>/ATOM.md` (project rules, ≤ 20 KB) if present.
-- `renderUserPrompt(msg)`: prepend `<atom_context>` with `<active_editor path line language/>`, `<selection ...>` blocks,
-  `<terminal_output>`, `<diagnostics>`, `<git_diff>`; file attachments become `@relative/path` mentions (the CLI expands
-  them); folders become `@relative/path/`. Then the user text.
+  `settings.agent.customInstructions` + contents of `<workspace>/ATOM.md` (project rules, ≤ 20 KB) if present — only
+  for trusted workspaces, and only when the file (through symlinks) stays inside the workspace.
+- `renderUserPromptBlocks(msg)`: an `<atom_context>` block with `<active_editor path line language/>`, `<selection ...>`
+  blocks, `<terminal_output>`, `<diagnostics>`, `<git_diff>`; then a block with the `@relative/path` mentions of file
+  attachments (the CLI expands them; folders become `@relative/path/`) and the user text. The preamble must be a
+  separate block: Claude Code takes a session's first/last prompt (History) from the first text block that does not
+  start with a tag and treats the last text block as the input. Slash commands stay first in a single block.
+  `renderUserPrompt` joins the blocks.
 
 ### ide-mcp.ts / ide-bridge.ts
 - `ide-bridge.ts`: `requestIde(method, params, timeoutMs = 8000)` sends `IPC.ideRequestEvent` with a requestId and
@@ -277,7 +314,9 @@ accent/accent-2 gradient).
 ### Workbench (App.tsx + components/workbench)
 - App boot: `useSettingsStore.load()`, restore `settings.lastWorkspace`, install keybindings, register core commands,
   register the IDE bridge (`lib/ide-bridge.ts`: `atom.ide.onRequest` answering from the editor store), subscribe
-  `atom.app.onMenuCommand` → `executeCommand`, `onBeforeClose` → confirm when `hasDirtyTabs()`.
+  `atom.app.onMenuCommand` → `executeCommand`, `onBeforeClose` → confirm when `hasDirtyTabs()`. Main asks both when the
+  window closes and when the app quits (Cmd/Ctrl+Q, menu, Dock, logout): `before-quit` is held until the renderer
+  confirms; services are disposed in `will-quit`.
 - Layout (react-resizable-panels): TitleBar (38 px, `drag`; mac: 78 px left inset for traffic lights; win/linux:
   138 px right inset for native window controls overlay) with ATOM logo, workspace name, a centered command-center
   search pill (opens quick open), layout toggle buttons (sidebar / panel / agent) and account avatar → ActivityBar

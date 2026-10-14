@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { ArrowUp, Clock, ImagePlus, Square } from 'lucide-react'
 import type { AgentModeDefinition } from '@shared/types'
 import { usePickerStore } from '../../../lib/agent-commands'
-import { isRunning, stripAtomContext } from '../../../lib/agent-reducer'
+import { isRunning, queuedMessageCount, stripAtomContext } from '../../../lib/agent-reducer'
 import type { ComposerState, UserItem } from '../../../lib/agent-types'
 import { cn } from '../../../lib/cn'
 import { formatKeybinding } from '../../../lib/platform'
@@ -56,7 +56,10 @@ export function Composer({ chatId }: { chatId: string }) {
   const status = useAgentStore((s) => s.chats[chatId]?.status ?? 'idle')
   const modeId = useAgentStore((s) => s.chats[chatId]?.modeId ?? '')
   const suggestion = useAgentStore((s) => s.chats[chatId]?.suggestion ?? null)
-  const queuedCount = useAgentStore((s) => s.chats[chatId]?.queuedCount ?? 0)
+  const queuedCount = useAgentStore((s) => {
+    const c = s.chats[chatId]
+    return c ? queuedMessageCount(c) : 0
+  })
   const chatWorkspace = useAgentStore((s) => s.chats[chatId]?.workspace ?? '')
   const openWorkspace = useWorkspaceStore((s) => s.workspace?.path ?? '')
   const workspace = chatWorkspace || openWorkspace
@@ -407,6 +410,7 @@ export function Composer({ chatId }: { chatId: string }) {
             value={text}
             rows={1}
             spellCheck
+            data-composer-input=""
             aria-label="Message ATOM"
             placeholder={placeholder}
             onChange={onChange}
@@ -437,7 +441,7 @@ export function Composer({ chatId }: { chatId: string }) {
           <div className="flex shrink-0 items-center gap-0.5">
             {queuedCount > 0 && (
               <span
-                title={`${queuedCount} message${queuedCount === 1 ? '' : 's'} queued — delivered when ATOM reaches the next step`}
+                title={`${queuedCount} message${queuedCount === 1 ? '' : 's'} queued — sent when ATOM finishes the current turn (Stop puts ${queuedCount === 1 ? 'it' : 'them'} back here)`}
                 className="flex h-5 items-center gap-1 rounded-md bg-accent-soft px-1.5 text-[10.5px] font-medium text-accent"
               >
                 <Clock size={11} />

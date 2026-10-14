@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { BarChart3, ExternalLink, Globe, KeyRound, Lock, LogIn, LogOut, ShieldCheck, Trash2 } from 'lucide-react'
 import { Badge, Button, confirmDialog } from '../../ui'
 import { AccountCard } from '../../auth/AccountCard'
-import { SecretForm } from '../../auth/AuthGate'
+import { SecretForm, secretStorageText } from '../../auth/AuthGate'
 import { useAuthStore } from '../../../stores/auth'
 import { errorMessage, toast } from '../../../stores/toast'
 import { atom } from '../../../lib/api'
@@ -100,7 +100,7 @@ export function AccountSection() {
 
       <SettingGroup
         title="Credentials stored by ATOM"
-        description="Optional alternatives to the browser login. Secrets are encrypted on this machine and only passed to the Claude Code process."
+        description={`Optional alternatives to the browser login, only passed to the Claude Code process. ${secretStorageText(status)}.`}
       >
         <SettingRow
           label="Long-lived token"

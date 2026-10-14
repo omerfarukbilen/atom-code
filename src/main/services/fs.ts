@@ -3,12 +3,13 @@ import { watch, type FSWatcher } from 'chokidar'
 import type { Stats } from 'node:fs'
 import { cp, lstat, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { basename, dirname, isAbsolute, join, parse, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
 import { IPC } from '../../shared/ipc'
 import { isImagePath } from '../../shared/paths'
-import type { FileContent, FileEntry, FileStat, FsChangeEvent, FsChangeKind } from '../../shared/types'
+import type { FileContent, FileEntry, FileStat, FsChangeEvent, FsChangeKind, TextEncodingId } from '../../shared/types'
 import { ctx } from '../context'
 import { settingsService } from './settings'
+import { decodeText, encodeText } from './text-encoding'
 
 /** Text files larger than this are not loaded into the editor. */
 const TEXT_LIMIT = 5 * 1024 * 1024
@@ -196,6 +197,44 @@ async function readHead(p: string, bytes: number): Promise<Buffer> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Text encodings
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Files that were read with an encoding other than plain UTF-8 (UTF-8 with BOM, Windows-1252), keyed by
+ * path: the renderer saves plain strings, and main writes them back in the encoding they came in.
+ */
+const textEncodings = new Map<string, TextEncodingId>()
+
+function encodingKey(p: string): string {
+  return CASE_INSENSITIVE_FS ? p.toLowerCase() : p
+}
+
+function rememberEncoding(p: string, encoding: TextEncodingId): void {
+  if (encoding === 'utf8') textEncodings.delete(encodingKey(p))
+  else textEncodings.set(encodingKey(p), encoding)
+}
+
+/** Keep remembered encodings with their files across a rename/move (folders included). */
+function moveEncodings(from: string, to: string): void {
+  const fromKey = encodingKey(from)
+  for (const [key, encoding] of [...textEncodings]) {
+    if (key === fromKey) {
+      textEncodings.delete(key)
+      textEncodings.set(encodingKey(to), encoding)
+    } else if (key.startsWith(fromKey + sep)) {
+      textEncodings.delete(key)
+      textEncodings.set(encodingKey(to) + key.slice(fromKey.length), encoding)
+    }
+  }
+}
+
+function forgetEncodings(p: string): void {
+  const key = encodingKey(p)
+  for (const k of [...textEncodings.keys()]) if (k === key || k.startsWith(key + sep)) textEncodings.delete(k)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Operations
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -253,7 +292,10 @@ export async function readFileContent(p: string): Promise<FileContent> {
     }
     const buf = await readFile(p)
     if (isBinaryBuffer(buf)) return { ...base, content: '', encoding: 'utf8', isBinary: true }
-    return { ...base, content: buf.toString('utf8'), encoding: 'utf8', isBinary: false }
+    // Strict UTF-8 (BOM remembered); anything else is read as Windows-1252 so it can be saved back unchanged.
+    const { text, encoding } = decodeText(buf)
+    rememberEncoding(p, encoding)
+    return { ...base, content: text, encoding: 'utf8', isBinary: false, textEncoding: encoding }
   } catch (err) {
     throw friendlyFsError(err, p, 'Reading file')
   }
@@ -261,9 +303,12 @@ export async function readFileContent(p: string): Promise<FileContent> {
 
 export async function writeTextFile(p: string, content: string): Promise<FileStat> {
   if (typeof content !== 'string') throw new Error('File content must be a string')
+  // Same encoding (and BOM) the file was read with; throws before touching the file when a character
+  // cannot be stored in it.
+  const data = encodeText(content, textEncodings.get(encodingKey(p)) ?? 'utf8')
   try {
     await mkdir(dirname(p), { recursive: true })
-    await writeFile(p, content, 'utf8')
+    await writeFile(p, data)
     return toFileStat(p, await stat(p))
   } catch (err) {
     throw friendlyFsError(err, p, 'Saving file')
@@ -276,6 +321,7 @@ async function createFile(p: string, content: unknown): Promise<void> {
   try {
     await mkdir(dirname(p), { recursive: true })
     await writeFile(p, text, { encoding: 'utf8', flag: 'wx' })
+    forgetEncodings(p)
   } catch (err) {
     throw friendlyFsError(err, p, 'Creating file')
   }
@@ -311,12 +357,14 @@ async function renamePath(from: string, to: string): Promise<void> {
   try {
     await mkdir(dirname(to), { recursive: true })
     await rename(from, to)
+    moveEncodings(from, to)
   } catch (err) {
     if (errorCode(err) === 'EXDEV') {
       // Moving across devices: copy then delete.
       try {
         await cp(from, to, { recursive: true, errorOnExist: true, force: false, preserveTimestamps: true, verbatimSymlinks: true })
         await rm(from, { recursive: true, force: true })
+        moveEncodings(from, to)
         return
       } catch (copyErr) {
         throw friendlyFsError(copyErr, to, 'Move')
@@ -334,6 +382,7 @@ async function deletePath(p: string): Promise<void> {
     throw friendlyFsError(err, p, 'Delete')
   }
   await trashPath(p)
+  forgetEncodings(p)
 }
 
 async function statPath(p: string): Promise<FileStat> {

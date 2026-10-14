@@ -55,7 +55,9 @@ export function InlineNameInput({
   }
 
   return (
-    <div className={cn('relative min-w-0 flex-1', className)}>
+    // Clicks inside the input (placing the caret, double-clicking a word) belong to the input, not to the tree
+    // row around it — the row would toggle the folder, or open the file and blur (= commit) a half-typed name.
+    <div className={cn('relative min-w-0 flex-1', className)} onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
       <input
         ref={ref}
         value={value}

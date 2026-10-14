@@ -112,7 +112,7 @@ export function AboutSection() {
       </SettingGroup>
 
       <SettingGroup title="Maintenance">
-        <SettingRow label="Settings folder" keywords="settings file json user data folder" description="Where ATOM keeps its settings and encrypted credentials.">
+        <SettingRow label="Settings folder" keywords="settings file json user data folder" description="Where ATOM keeps its settings and stored credentials.">
           <Button size="sm" variant="secondary" icon={<FolderOpen size={13} />} onClick={() => void openSettingsFolder()}>
             Reveal
           </Button>

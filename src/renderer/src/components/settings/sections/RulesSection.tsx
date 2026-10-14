@@ -84,14 +84,30 @@ export function RulesSection() {
 
   const createAtomMd = async (): Promise<void> => {
     if (!atomMdPath || !workspace) return
+    const path = atomMdPath
     setCreating(true)
     try {
-      await atom.fs.writeFile(atomMdPath, atomMdTemplate(workspace.name))
+      // createFile fails when the file exists: ATOM.md may have appeared since this page checked (agent, git pull…).
+      await atom.fs.createFile(path, atomMdTemplate(workspace.name))
       atomMd.recheck()
       toast.success('Created ATOM.md', 'Edit it to teach ATOM about this project.')
-      await openFile(atomMdPath)
+      await openFile(path)
     } catch (err) {
-      toast.error('Could not create ATOM.md', errorMessage(err))
+      atomMd.recheck()
+      const existing = await atom.fs.stat(path).then((st) => st.exists && !st.isDirectory, () => false)
+      if (existing) {
+        toast.show(
+          {
+            kind: 'info',
+            message: 'ATOM.md already exists',
+            detail: 'It was left unchanged.',
+            action: { label: 'Open ATOM.md', run: () => void openFile(path) }
+          },
+          8000
+        )
+      } else {
+        toast.error('Could not create ATOM.md', errorMessage(err))
+      }
     } finally {
       setCreating(false)
     }

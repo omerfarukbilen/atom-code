@@ -1,4 +1,5 @@
 import type { ThemeId } from '@shared/types'
+import { atom } from '../../lib/api'
 import { registerCommands, type Command } from '../../stores/commands'
 import { useEditorStore } from '../../stores/editor'
 import { useGitStore } from '../../stores/git'
@@ -84,9 +85,20 @@ export function registerWorkbenchCommands(): () => void {
     { id: 'view.account', title: 'Account & Subscription', category: 'Preferences', icon: 'CircleUser', run: () => layout().openSettings('account') },
 
     // ── Workspace ───────────────────────────────────────────────────────────
-    { id: 'file.openFolder', title: 'Open Folder…', category: 'File', keybinding: 'mod+o', icon: 'FolderOpen', run: () => useWorkspaceStore.getState().openFolderDialog() },
+    {
+      id: 'file.openFolder',
+      title: 'Open Folder…',
+      category: 'File',
+      keybinding: 'mod+o',
+      icon: 'FolderOpen',
+      // Ctrl+O belongs to a focused shell (readline operate-and-get-next, nano write-out).
+      terminalPassthrough: true,
+      run: () => useWorkspaceStore.getState().openFolderDialog()
+    },
     { id: 'workspace.close', title: 'Close Folder', category: 'File', icon: 'FolderX', when: hasWorkspace, run: () => useWorkspaceStore.getState().closeWorkspace() },
     { id: 'workspace.refreshFiles', title: 'Rebuild File Index', category: 'File', icon: 'RefreshCw', when: hasWorkspace, run: () => useWorkspaceStore.getState().refreshFiles() },
+    // The only way to change workspace trust on Windows / Linux, which have no visible menu bar.
+    { id: 'workspace.manageTrust', title: 'Manage Trust…', category: 'Workspace', icon: 'ShieldCheck', when: hasWorkspace, run: () => void atom.workspace.manageTrust().catch(() => undefined) },
 
     // ── Explorer ────────────────────────────────────────────────────────────
     { id: 'explorer.newFile', title: 'New File…', category: 'Explorer', icon: 'FilePlus', when: hasWorkspace, run: () => startNewFile('new-file') },

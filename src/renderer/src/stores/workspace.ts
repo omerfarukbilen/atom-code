@@ -20,6 +20,14 @@ export interface WorkspaceState extends WorkspaceStoreApi {
 }
 
 let filesRequest = 0
+/**
+ * Workspace root (normalized) whose initial listing has finished: `files` belongs to it and is kept fresh
+ * incrementally. (An empty list is a valid, loaded state — a new project starts with no files.)
+ */
+let filesRoot: string | null = null
+/** fs events seen while a listing is in flight; replayed on top of it (the listing may predate them). */
+let pendingEvents: FsChangeEvent[] = []
+const MAX_PENDING_EVENTS = 20_000
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   workspace: null,
@@ -52,6 +60,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   closeWorkspace: () => {
     filesRequest++
+    resetFileIndex()
     set({ workspace: null, files: [], filesLoading: false, generation: get().generation + 1 })
     void useSettingsStore
       .getState()
@@ -68,16 +77,25 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const req = ++filesRequest
     set({ filesLoading: true })
     try {
-      const files = await atom.workspace.listFiles(ws.path)
+      const listed = await atom.workspace.listFiles(ws.path)
       if (req !== filesRequest) return
-      set({ files, filesLoading: false })
+      const replay = pendingEvents
+      pendingEvents = []
+      filesRoot = normalizeSlashes(ws.path)
+      set({ files: applyFsEvents(listed, replay, ws.path) ?? listed, filesLoading: false })
     } catch (err) {
       if (req !== filesRequest) return
+      pendingEvents = []
       set({ filesLoading: false })
       console.warn('[workspace] listFiles failed', err)
     }
   }
 }))
+
+function resetFileIndex(): void {
+  filesRoot = null
+  pendingEvents = []
+}
 
 function applyWorkspace(info: WorkspaceInfo | null): void {
   const prev = useWorkspaceStore.getState().workspace
@@ -86,6 +104,7 @@ function applyWorkspace(info: WorkspaceInfo | null): void {
     if (prev.name !== info.name || prev.isGitRepo !== info.isGitRepo) useWorkspaceStore.setState({ workspace: info })
     return
   }
+  resetFileIndex()
   useWorkspaceStore.setState({ workspace: info, files: [], generation: useWorkspaceStore.getState().generation + 1 })
   if (info) void useWorkspaceStore.getState().refreshFiles()
 }
@@ -99,17 +118,15 @@ function isGitInternal(path: string): boolean {
 }
 
 /**
- * Keep the quick-open file list fresh incrementally. (A full re-list would hit main's 5 s cache and return
- * stale data right after a change.) A batch is applied in one pass — later events for a path win — so a
- * large checkout does not copy the (up to 50k entry) list once per event.
+ * Apply a batch of fs events to a file list in one pass — later events for a path win — so a large checkout
+ * does not copy the (up to 50k entry) list once per event. Returns null when nothing changed. Re-applying an
+ * event is a no-op, which lets events seen during a listing be replayed on top of it.
  */
-const offFsChange = atom.fs.onChange((events: FsChangeEvent[]) => {
-  const { workspace, files } = useWorkspaceStore.getState()
-  if (!workspace || files.length === 0) return
+function applyFsEvents(files: string[], events: FsChangeEvent[], root: string): string[] | null {
   const present = new Map<string, boolean>()
   const removedDirs: string[] = []
   for (const e of events) {
-    if (!isInside(workspace.path, e.path) || isGitInternal(e.path)) continue
+    if (!isInside(root, e.path) || isGitInternal(e.path)) continue
     if (e.kind === 'add') present.set(e.path, true)
     else if (e.kind === 'unlink') present.set(e.path, false)
     else if (e.kind === 'unlinkDir') {
@@ -117,7 +134,7 @@ const offFsChange = atom.fs.onChange((events: FsChangeEvent[]) => {
       for (const p of present.keys()) if (isInside(e.path, p)) present.set(p, false)
     }
   }
-  if (!present.size && !removedDirs.length) return
+  if (!present.size && !removedDirs.length) return null
   let changed = false
   const next: string[] = []
   for (const f of files) {
@@ -132,7 +149,21 @@ const offFsChange = atom.fs.onChange((events: FsChangeEvent[]) => {
     next.push(p)
     changed = true
   }
-  if (changed) useWorkspaceStore.setState({ files: next })
+  return changed ? next : null
+}
+
+/**
+ * Keep the quick-open file list fresh incrementally. (A full re-list would hit main's 5 s cache and return
+ * stale data right after a change.)
+ */
+const offFsChange = atom.fs.onChange((events: FsChangeEvent[]) => {
+  const { workspace, files, filesLoading } = useWorkspaceStore.getState()
+  if (!workspace) return
+  if (filesLoading && pendingEvents.length < MAX_PENDING_EVENTS) pendingEvents = pendingEvents.concat(events)
+  // Until the first listing of this root lands there is nothing to update (it is replayed then).
+  if (filesRoot !== normalizeSlashes(workspace.path)) return
+  const next = applyFsEvents(files, events, workspace.path)
+  if (next) useWorkspaceStore.setState({ files: next })
 })
 
 if (import.meta.hot) {

@@ -21,10 +21,11 @@ import { READ_ONLY_TOOLS, normalizeModelValue } from '../../shared/modes'
 import type { AgentModeDefinition, AppSettings, EffortLevel, McpServerSetting, PermissionPolicy } from '../../shared/types'
 import { ctx } from '../context'
 import { getAgentEnv } from '../services/auth'
-import { resolveClaudeBinary } from '../services/claude-binary'
+import { createClaudeSpawner, resolveClaudeBinary } from '../services/claude-binary'
 import { getEnabledSkillsOption } from '../services/library'
 import { createIdeMcpServer } from './ide-mcp'
 import { PROJECT_RULES_MAX_CHARS, buildSystemAppend } from './prompt'
+import { isPathTrusted, resolveInsideWorkspace } from './trust'
 
 /** Name of the in-process MCP server exposing the IDE tools (tool prefix `mcp__atom-ide__`). */
 export const IDE_SERVER_NAME = 'atom-ide'
@@ -115,6 +116,8 @@ export function computeConfigSignature(
     allowed: [...toolConfig.allowedTools].sort(),
     disallowed: [...toolConfig.disallowedTools].sort(),
     systemAppend,
+    // Trusting (or revoking) the workspace changes which setting sources and MCP servers load.
+    trusted: isPathTrusted(settings.trustedWorkspaces, workspace),
     // Options that are only read when the CLI is spawned (see buildQueryOptions).
     launch: {
       disabledSkills: [...agent.disabledSkills].sort(),
@@ -131,13 +134,21 @@ export function computeConfigSignature(
   })
 }
 
-/** Read `<workspace>/ATOM.md` (project rules for agents), capped at ~20 KB. Null when absent/unreadable. */
-export async function readProjectRules(workspace: string): Promise<string | null> {
-  const file = join(workspace, 'ATOM.md')
-  if (!existsSync(file)) return null
+/**
+ * Read `<workspace>/ATOM.md` (project rules for agents), capped at ~20 KB. Null when absent, unreadable,
+ * the workspace is not trusted, or the file (through symlinks) lies outside the workspace — a link to
+ * `~/.ssh/id_rsa` or `/proc/self/environ` must never end up in the system prompt.
+ */
+export async function readProjectRules(workspace: string, trusted: boolean): Promise<string | null> {
+  if (!trusted) return null
+  const link = join(workspace, 'ATOM.md')
+  if (!existsSync(link)) return null
+  const file = resolveInsideWorkspace(workspace, link)
+  if (!file) return null
   let handle: Awaited<ReturnType<typeof open>> | null = null
   try {
     handle = await open(file, 'r')
+    if (!(await handle.stat()).isFile()) return null
     // UTF-8 can use up to 4 bytes per char; read enough for the char cap plus a truncation marker.
     const maxBytes = PROJECT_RULES_MAX_CHARS * 4 + 4
     const buffer = Buffer.alloc(maxBytes)
@@ -185,8 +196,20 @@ export interface BuildQueryOptionsParams {
   model: string
   effort: EffortLevel | 'auto'
   permission: PermissionPolicy
+  /**
+   * The user trusts this workspace's Claude Code project configuration (see workspace-trust.ts). When
+   * false, project/local settings (hooks, env, permissions), `.mcp.json` servers, CLAUDE.md and ATOM.md
+   * are not loaded.
+   */
+  trusted: boolean
   /** Already-read ATOM.md contents (avoid reading twice); undefined = read now. */
   projectRules?: string | null
+  /** Permission rules the user allowed "for this chat" (re-applied on every launch of the chat). */
+  sessionAllowRules?: string[]
+  /** Extra working directories the user allowed for this chat. */
+  sessionDirectories?: string[]
+  /** Spending limit for this launch in USD (what is left of the chat's budget); undefined = settings value. */
+  maxBudgetUsd?: number | null
   resume?: string
   forkSession?: boolean
   title?: string
@@ -217,19 +240,23 @@ async function enabledSkills(workspace: string): Promise<string[] | 'all' | unde
 
 /** Build the full SDK `Options` for one `query()` run of a chat. */
 export async function buildQueryOptions(params: BuildQueryOptionsParams): Promise<Options> {
-  const { workspace, mode, settings } = params
+  const { workspace, mode, settings, trusted } = params
   const agent = settings.agent
-  const projectRules = params.projectRules === undefined ? await readProjectRules(workspace) : params.projectRules
+  const projectRules = params.projectRules === undefined ? await readProjectRules(workspace, trusted) : params.projectRules
 
-  const settingSources: SettingSource[] = ['project', 'local']
+  // 'local' is repository content too (.claude/settings.local.json can be committed or shipped in an archive).
+  const settingSources: SettingSource[] = trusted ? ['project', 'local'] : []
   if (agent.loadUserSettings) settingSources.unshift('user')
 
   const toolConfig = resolveToolConfig(mode, settings)
+  const denied = new Set(toolConfig.disallowedTools)
+  const allowedTools = uniq([...toolConfig.allowedTools, ...(params.sessionAllowRules ?? [])]).filter((t) => !denied.has(t))
   const model = resolveModel(params.model, mode)
   const effort = resolveEffort(params.effort, mode)
   const skills = await enabledSkills(workspace)
   const claudeBinary = resolveClaudeBinary()
   const pluginDir = ctx.pluginDir
+  const maxBudgetUsd = params.maxBudgetUsd === undefined ? agent.maxBudgetUsd : params.maxBudgetUsd
 
   const options: Options = {
     cwd: workspace,
@@ -244,7 +271,7 @@ export async function buildQueryOptions(params: BuildQueryOptionsParams): Promis
     settingSources,
     permissionMode: resolvePermissionMode(mode, params.permission),
     canUseTool: params.canUseTool,
-    allowedTools: toolConfig.allowedTools,
+    allowedTools,
     disallowedTools: toolConfig.disallowedTools,
     mcpServers: {
       ...toSdkMcpServers(settings.mcpServers),
@@ -259,15 +286,22 @@ export async function buildQueryOptions(params: BuildQueryOptionsParams): Promis
     toolConfig: { askUserQuestion: { previewFormat: 'markdown' } }
   }
 
-  if (claudeBinary) options.pathToClaudeCodeExecutable = claudeBinary
+  if (claudeBinary) {
+    options.pathToClaudeCodeExecutable = claudeBinary
+    const spawner = createClaudeSpawner(claudeBinary, params.onStderr)
+    if (spawner) options.spawnClaudeCodeProcess = spawner
+  }
+  // Untrusted workspace: only ATOM's own MCP servers (settings + atom-ide), never the project's .mcp.json.
+  if (!trusted) options.strictMcpConfig = true
   if (existsSync(pluginDir)) options.plugins = [{ type: 'local', path: pluginDir }]
   if (skills !== undefined) options.skills = skills
   if (toolConfig.tools) options.tools = toolConfig.tools
+  if (params.sessionDirectories && params.sessionDirectories.length > 0) options.additionalDirectories = [...params.sessionDirectories]
   if (params.permission === 'bypassPermissions') options.allowDangerouslySkipPermissions = true
   if (model) options.model = model
   if (effort) options.effort = effort
   if (agent.maxTurns !== null && agent.maxTurns > 0) options.maxTurns = Math.floor(agent.maxTurns)
-  if (agent.maxBudgetUsd !== null && agent.maxBudgetUsd > 0) options.maxBudgetUsd = agent.maxBudgetUsd
+  if (maxBudgetUsd !== null && maxBudgetUsd > 0) options.maxBudgetUsd = maxBudgetUsd
   if (agent.sandbox) options.sandbox = { enabled: true, failIfUnavailable: false }
   if (params.hooks) options.hooks = params.hooks
   if (params.onStderr) options.stderr = params.onStderr

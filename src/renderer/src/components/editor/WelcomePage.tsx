@@ -176,12 +176,13 @@ export function WelcomePage() {
   const recentList = recent.slice(0, 7)
 
   return (
-    <div className="relative h-full overflow-auto bg-app">
+    // A container: the layout follows the editor column's width, not the window's (side panels take a lot).
+    <div className="@container relative h-full overflow-auto bg-app">
       <div
         className="pointer-events-none absolute inset-x-0 top-0 h-[420px]"
         style={{ background: 'radial-gradient(640px 300px at 50% -40px, var(--accent-soft), transparent 70%)' }}
       />
-      <div className="relative mx-auto flex min-h-full max-w-[920px] flex-col px-10 pb-10 pt-16">
+      <div className="relative mx-auto flex min-h-full max-w-[920px] flex-col px-6 pb-10 pt-16 @xl:px-10">
         <header className="flex flex-col items-center text-center animate-fade-in">
           <div className="relative mb-5">
             <div className="absolute inset-[-18px] rounded-full bg-accent-soft blur-2xl" />
@@ -192,15 +193,18 @@ export function WelcomePage() {
             The AI-native code editor. Plan, edit and ship with an agent powered by Claude — right next to your code.
           </p>
           {workspace && (
-            <div className="mt-4 inline-flex items-center gap-1.5 rounded-full border border-line bg-elevated px-3 py-1 text-[12px] text-muted">
-              <Folder size={13} className="text-accent" />
-              <span className="font-medium text-fg">{workspace.name}</span>
-              <span className="text-subtle">{shortenHome(workspace.path)}</span>
+            <div
+              className="mt-4 inline-flex max-w-full items-center gap-1.5 whitespace-nowrap rounded-full border border-line bg-elevated px-3 py-1 text-[12px] text-muted"
+              title={workspace.path}
+            >
+              <Folder size={13} className="shrink-0 text-accent" />
+              <span className="max-w-[60%] shrink-0 truncate font-medium text-fg">{workspace.name}</span>
+              <span className="min-w-0 truncate text-subtle">{shortenHome(workspace.path)}</span>
             </div>
           )}
         </header>
 
-        <div className="mt-12 grid gap-10 md:grid-cols-[1.15fr_1fr]">
+        <div className="mt-12 grid gap-10 @3xl:grid-cols-[1.15fr_1fr]">
           <div className="flex min-w-0 flex-col gap-8">
             <section>
               <h2 className="mb-2 px-2.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-subtle">Start</h2>

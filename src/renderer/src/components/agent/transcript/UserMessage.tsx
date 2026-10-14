@@ -242,7 +242,10 @@ export const UserMessage = memo(function UserMessage({ item }: { item: UserItem 
       </div>
       <div className="mt-0.5 flex h-5 items-center gap-1 text-[11px] text-subtle">
         {item.queued && (
-          <span className="flex items-center gap-1 text-info" title="Will be sent to ATOM as soon as possible">
+          <span
+            className="flex items-center gap-1 text-info"
+            title={item.held ? 'Sent when ATOM finishes the current turn — Stop puts it back into the input' : 'Will be sent to ATOM as soon as possible'}
+          >
             <Clock size={11} /> Queued
           </span>
         )}

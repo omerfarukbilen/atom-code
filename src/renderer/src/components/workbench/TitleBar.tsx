@@ -12,14 +12,17 @@ import { togglePanel } from './commands'
 
 /**
  * 38 px custom title bar. The whole bar is a window drag region; interactive children opt out with
- * `.no-drag`. macOS reserves 78 px on the left for the traffic lights; Windows/Linux reserve 140 px on the
- * right for the native window-controls overlay.
+ * `.no-drag`. macOS reserves 78 px on the left for the traffic lights; Windows/Linux reserve the width of the
+ * native window-controls overlay on the right (from the `titlebar-area-*` env variables, so it follows page
+ * zoom; 140 px when they are unavailable).
  */
+const WCO_INSET = 'calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, calc(100vw - 140px)))'
+
 export function TitleBar() {
   return (
     <header
       className="drag relative flex h-[38px] shrink-0 items-center gap-2 border-b border-line bg-titlebar"
-      style={{ paddingLeft: isMac ? 78 : 12, paddingRight: isMac ? 8 : 140 }}
+      style={{ paddingLeft: isMac ? 78 : 12, paddingRight: isMac ? 8 : WCO_INSET }}
     >
       <div className="flex min-w-0 shrink items-center gap-2">
         <AtomLogo size={16} className="shrink-0" />

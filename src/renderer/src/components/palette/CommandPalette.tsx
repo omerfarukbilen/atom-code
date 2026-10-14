@@ -122,6 +122,9 @@ function PaletteInner({ initial }: { initial: string }) {
     // Place the caret after the prefix.
     const len = inputRef.current?.value.length ?? 0
     inputRef.current?.setSelectionRange(len, len)
+    // An empty index (failed listing, or a folder that was empty when opened) is cheap to re-check.
+    const ws = useWorkspaceStore.getState()
+    if (ws.workspace && !ws.files.length && !ws.filesLoading) void ws.refreshFiles()
   }, [])
 
   const fileEntries = useMemo(() => (workspace ? files.map((abs) => ({ abs, rel: relativePath(workspace.path, abs) })) : []), [files, workspace])
@@ -341,6 +344,8 @@ function PaletteInner({ initial }: { initial: string }) {
             value={value}
             spellCheck={false}
             autoComplete="off"
+            // List navigation (handled in onKeyDown) — keeps the global Ctrl+N / Ctrl+P bindings from firing.
+            data-keys-passthrough="ctrl+n ctrl+p"
             placeholder={PLACEHOLDERS[liveMode]}
             onChange={(e) => setValue(e.target.value)}
             onKeyDown={onKeyDown}

@@ -3,7 +3,7 @@ import { Plus, SquareTerminal, Trash2 } from 'lucide-react'
 import { cn } from '../../lib/cn'
 import { isMac } from '../../lib/platform'
 import { useLayoutStore } from '../../stores/layout'
-import { focusTerminal, useTerminalStore, type TerminalInstance } from '../../stores/terminal'
+import { focusTerminal, TERMINAL_LIST_WIDTH, useTerminalStore, type TerminalInstance } from '../../stores/terminal'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { Button, EmptyState, Kbd, Spinner } from '../ui'
 import { XTerm } from './XTerm'
@@ -58,7 +58,11 @@ export function TerminalPanel() {
 
   return (
     <div className="flex h-full min-h-0">
-      <div className="relative min-w-0 flex-1 bg-panel" onMouseDown={() => active && requestAnimationFrame(() => focusTerminal(active.id))}>
+      <div
+        data-terminal-viewport
+        className="relative min-w-0 flex-1 bg-panel"
+        onMouseDown={() => active && requestAnimationFrame(() => focusTerminal(active.id))}
+      >
         {active ? (
           <XTerm key={active.id} id={active.id} />
         ) : creating ? (
@@ -84,7 +88,12 @@ export function TerminalPanel() {
         )}
       </div>
       {instances.length > 1 && (
-        <div className="w-[168px] shrink-0 overflow-y-auto border-l border-line bg-panel py-1" role="tablist" aria-label="Terminals">
+        <div
+          className="shrink-0 overflow-y-auto border-l border-line bg-panel py-1"
+          style={{ width: TERMINAL_LIST_WIDTH }}
+          role="tablist"
+          aria-label="Terminals"
+        >
           {instances.map((inst) => (
             <div
               key={inst.id}

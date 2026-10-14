@@ -333,18 +333,43 @@ export function NumberField({
   disabled?: boolean
 }) {
   const [draft, setDraft] = useState(value === null ? '' : String(value))
-  useEffect(() => setDraft(value === null ? '' : String(value)), [value])
+  /** The draft has edits that were neither committed nor replaced by a new `value`. */
+  const dirty = useRef(false)
+  useEffect(() => {
+    dirty.current = false
+    setDraft(value === null ? '' : String(value))
+  }, [value])
+
+  /** Valid, clamped number for a draft (null when empty / not a number). */
+  const parse = (text: string): number | null => {
+    const n = Number(text)
+    if (text.trim() === '' || !Number.isFinite(n)) return null
+    return Math.min(max ?? Infinity, Math.max(min ?? -Infinity, n))
+  }
 
   const commit = (): void => {
-    const n = Number(draft)
-    if (draft.trim() === '' || !Number.isFinite(n)) {
+    dirty.current = false
+    const clamped = parse(draft)
+    if (clamped === null) {
       setDraft(value === null ? '' : String(value))
       return
     }
-    const clamped = Math.min(max ?? Infinity, Math.max(min ?? -Infinity, n))
     setDraft(String(clamped))
     if (clamped !== value) onCommit(clamped)
   }
+
+  // Closing Settings with Esc unmounts a focused input without a blur event: keep the edit (like TextField).
+  const latest = useRef({ draft, value, onCommit, parse })
+  latest.current = { draft, value, onCommit, parse }
+  useEffect(
+    () => () => {
+      if (!dirty.current) return
+      const l = latest.current
+      const clamped = l.parse(l.draft)
+      if (clamped !== null && clamped !== l.value) l.onCommit(clamped)
+    },
+    []
+  )
 
   return (
     <Input
@@ -357,7 +382,10 @@ export function NumberField({
       placeholder={placeholder}
       value={draft}
       className={cn(width, disabled && 'opacity-50')}
-      onChange={(e) => setDraft(e.target.value)}
+      onChange={(e) => {
+        dirty.current = true
+        setDraft(e.target.value)
+      }}
       onBlur={commit}
       onKeyDown={(e) => {
         if (e.key === 'Enter') commit()

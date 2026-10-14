@@ -33,7 +33,7 @@ export function showHelpNotice(chatId: string): void {
   useAgentStore.setState((s) => {
     const chat = s.chats[chatId]
     if (!chat) return s
-    return { chats: { ...s.chats, [chatId]: addNotice(chat, { variant: 'info', text: 'ATOM Code — shortcuts & commands', detail: helpMarkdown() }) } }
+    return { chats: { ...s.chats, [chatId]: addNotice(chat, { variant: 'info', text: 'ATOM Code — shortcuts & commands', detail: helpMarkdown(), detailMarkdown: true }) } }
   })
 }
 

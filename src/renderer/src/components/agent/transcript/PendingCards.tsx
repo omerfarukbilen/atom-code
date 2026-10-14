@@ -14,6 +14,7 @@ import { firstLine, hostOf, isObj, prettyJson, str, truncate } from './format'
 import { Markdown } from './Markdown'
 import { PendingShell, isTypingTarget, useCardFocus, useResponder } from './PendingShell'
 import { QuestionCard } from './QuestionCard'
+import { RenderBoundary } from './RenderBoundary'
 import { lineOffsetOf, useFileContent } from './tools/FileTools'
 import { parseMcpName } from './tools/MiscTools'
 import { OutputBlock, PathChip } from './ToolShell'
@@ -222,6 +223,9 @@ function PermissionCard({ request, autoFocus }: { request: PermissionRequest; au
   const ruleText = rules.join(', ')
   const allow = (scope: 'once' | 'session' | 'always'): void => respond({ behavior: 'allow', scope })
   const deny = (message?: string): void => respond({ behavior: 'deny', message: message?.trim() || undefined })
+  // The CLI asked for an explicit click: no Enter-to-allow.
+  const clickOnly = request.defaultToNo === true
+  const noAlways = request.suppressAlwaysAllow === true
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
     if (e.key === 'Escape') {
@@ -234,7 +238,7 @@ function PermissionCard({ request, autoFocus }: { request: PermissionRequest; au
     // Buttons handle their own Enter; only the focused card itself maps Enter to "Allow".
     if (e.key === 'Enter' && e.target === e.currentTarget && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
       e.preventDefault()
-      if (armed()) allow('once')
+      if (!clickOnly && !e.repeat && armed()) allow('once')
     }
   }
 
@@ -261,7 +265,14 @@ function PermissionCard({ request, autoFocus }: { request: PermissionRequest; au
           </div>
         )}
         <div className="flex flex-wrap items-center gap-1.5">
-          <Button variant="primary" size="sm" disabled={busy} onClick={() => allow('once')} iconRight={<Kbd keys="enter" className="!border-transparent !bg-accent-fg/15 !text-accent-fg" />}>
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={busy}
+            onClick={() => allow('once')}
+            title={clickOnly ? 'This action needs an explicit click to allow' : undefined}
+            iconRight={clickOnly ? undefined : <Kbd keys="enter" className="!border-transparent !bg-accent-fg/15 !text-accent-fg" />}
+          >
             Allow
           </Button>
           <Button
@@ -276,9 +287,15 @@ function PermissionCard({ request, autoFocus }: { request: PermissionRequest; au
           <Button
             variant="secondary"
             size="sm"
-            disabled={busy || !rules.length}
+            disabled={busy || !rules.length || noAlways}
             onClick={() => allow('always')}
-            title={rules.length ? `Always allow ${ruleText} in this project (.claude/settings.local.json)` : 'No reusable permission rule was suggested for this action'}
+            title={
+              noAlways
+                ? 'A permanent rule cannot be saved for this action (or this folder is not trusted): use "Allow for this chat"'
+                : rules.length
+                  ? `Always allow ${ruleText} in this project (.claude/settings.local.json)`
+                  : 'No reusable permission rule was suggested for this action'
+            }
           >
             Always allow
           </Button>
@@ -343,9 +360,10 @@ function PlanCard({ request, autoFocus }: { request: PermissionRequest; autoFocu
       } else setFeedbackOpen(true)
       return
     }
-    if (e.key === 'Enter' && e.target === e.currentTarget && !e.shiftKey) {
+    // Approving switches the chat to auto-accept edits: it takes ⌘/Ctrl+Enter (or a click), never a bare Enter.
+    if (e.key === 'Enter' && e.target === e.currentTarget && !e.shiftKey && (e.metaKey || e.ctrlKey)) {
       e.preventDefault()
-      if (armed()) approve('acceptEdits')
+      if (!e.repeat && armed()) approve('acceptEdits')
     }
   }
 
@@ -368,7 +386,7 @@ function PlanCard({ request, autoFocus }: { request: PermissionRequest; autoFocu
       <div className="flex flex-col gap-2 px-3.5 py-3">
         {!feedbackOpen ? (
           <div className="flex flex-wrap items-center gap-1.5">
-            <Button variant="primary" size="sm" disabled={busy} onClick={() => approve('acceptEdits')} iconRight={<Kbd keys="enter" className="!border-transparent !bg-accent-fg/15 !text-accent-fg" />}>
+            <Button variant="primary" size="sm" disabled={busy} onClick={() => approve('acceptEdits')} iconRight={<Kbd keys="mod+enter" className="!border-transparent !bg-accent-fg/15 !text-accent-fg" />}>
               Approve &amp; auto-accept edits
             </Button>
             <Button variant="secondary" size="sm" disabled={busy} onClick={() => approve('default')}>
@@ -428,7 +446,9 @@ export function PendingRequests({ chatId }: { chatId: string }) {
   return (
     <div className={cn('flex flex-col gap-2.5')}>
       {requests.map((r, i) => (
-        <PendingCard key={r.requestId} request={r} autoFocus={i === 0} />
+        <RenderBoundary key={r.requestId} what="this prompt (press Stop to cancel it)">
+          <PendingCard request={r} autoFocus={i === 0} />
+        </RenderBoundary>
       ))}
     </div>
   )

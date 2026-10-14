@@ -182,6 +182,8 @@ function buildCommands(): Command[] {
       category: 'File',
       icon: 'FilePlus',
       keybinding: 'mod+n',
+      // Ctrl+N is "next history" in a focused shell (readline, nano).
+      terminalPassthrough: true,
       run: () => editor().openNewFileDialog()
     },
     {
@@ -278,6 +280,8 @@ function buildCommands(): Command[] {
       category: 'Editor',
       icon: 'ArrowDownToLine',
       keybinding: ctrl('g'),
+      // Ctrl+G is readline's abort (fzf, less, nano) in a focused shell.
+      terminalPassthrough: true,
       when: () => hasTextTab(),
       run: () => {
         const ed = getActiveMonacoEditor()

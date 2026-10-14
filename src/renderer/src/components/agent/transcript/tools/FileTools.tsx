@@ -172,7 +172,30 @@ export function EditTool({ tool }: { tool: ToolCall }) {
   const isNew = m.writeType === 'create' || (m.isWrite && m.preApply && m.current === null)
   const verb = m.isWrite ? (isNew ? 'Create' : 'Write') : 'Edit'
   const icon: LucideIcon = m.isWrite && isNew ? FilePlus : FilePen
-  const firstLine = m.hunks[0] ? m.hunks[0].newStart + m.offset : undefined
+  // Unanchored hunks are numbered from the start of the edit snippet, not the file: no line to show.
+  const firstLine = m.anchored && m.hunks[0] ? m.hunks[0].newStart + m.offset : undefined
+
+  /** Open the file at the edit; unanchored edits (history, denied, interrupted) look the snippet up on disk. */
+  const openFile = async (): Promise<void> => {
+    if (firstLine !== undefined || !m.edits.length) {
+      openPath(m.path, workspace, firstLine)
+      return
+    }
+    const abs = resolvePath(m.path, workspace)
+    const onDisk = await atom.fs
+      .readFile(abs)
+      .then((f) => (f.isBinary || f.tooLarge ? null : f.content))
+      .catch(() => null)
+    const edit = m.edits[0]
+    const hunk = m.hunks[0]
+    // Applied edits leave new_string in the file; denied / interrupted ones still have old_string.
+    const newAt = edit.newString ? lineOffsetOf(onDisk, edit.newString) : null
+    const oldAt = newAt === null && edit.oldString ? lineOffsetOf(onDisk, edit.oldString) : null
+    let line: number | undefined
+    if (newAt !== null) line = newAt + (hunk ? hunk.newStart : 1)
+    else if (oldAt !== null) line = oldAt + (hunk ? hunk.oldStart : 1)
+    openPath(m.path, workspace, line)
+  }
 
   const openDiff = async (): Promise<void> => {
     if (!m.path) return
@@ -241,7 +264,7 @@ export function EditTool({ tool }: { tool: ToolCall }) {
       actions={
         m.path ? (
           <>
-            <ToolAction icon={FileText} label="Open" title="Open file" onClick={() => openPath(m.path, workspace, firstLine)} />
+            <ToolAction icon={FileText} label="Open" title="Open file" onClick={() => void openFile()} />
             <ToolAction icon={GitCompare} label="Diff" title="Open diff in the editor" onClick={() => void openDiff()} />
           </>
         ) : undefined

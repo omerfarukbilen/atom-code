@@ -72,6 +72,7 @@ export const IPC = {
   workspaceOpen: 'workspace:open',
   workspaceGetCurrent: 'workspace:getCurrent',
   workspaceListFiles: 'workspace:listFiles',
+  workspaceManageTrust: 'workspace:manageTrust',
   workspaceChangedEvent: 'workspace:changedEvent',
 
   // fs
@@ -208,6 +209,12 @@ export interface AtomAPI {
     getCurrent(): Promise<WorkspaceInfo | null>
     /** All files (absolute paths) in the workspace, gitignore-aware, capped at 50k. */
     listFiles(root: string): Promise<string[]>
+    /**
+     * Show the workspace-trust dialog (native) for `path` (default: the current workspace) and let the user
+     * trust or revoke it. Resolves to whether the folder is trusted afterwards. Only trusted folders load
+     * their Claude Code project configuration (`.claude/settings*.json`, `.mcp.json`, CLAUDE.md, ATOM.md).
+     */
+    manageTrust(path?: string): Promise<boolean>
     onChanged(cb: (ws: WorkspaceInfo | null) => void): Unsubscribe
   }
 
@@ -266,9 +273,9 @@ export interface AtomAPI {
     /** Write to the login process stdin (e.g. paste the authorization code + "\r"). */
     writeLogin(loginId: string, data: string): Promise<void>
     cancelLogin(loginId: string): Promise<void>
-    /** Store (encrypted) or clear an Anthropic API key. */
+    /** Store or clear an Anthropic API key (encrypted when an OS keyring is available — see AuthStatus.secretStorage). */
     setApiKey(key: string | null): Promise<AuthStatus>
-    /** Store (encrypted) or clear a long-lived OAuth token from `claude setup-token`. */
+    /** Store or clear a long-lived OAuth token from `claude setup-token` (same storage as the API key). */
     setOAuthToken(token: string | null): Promise<AuthStatus>
     /** Logs out of Claude Code and clears stored credentials. */
     logout(): Promise<AuthStatus>

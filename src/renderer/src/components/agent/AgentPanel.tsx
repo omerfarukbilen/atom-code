@@ -14,6 +14,7 @@ import { EmptyChat } from './EmptyChat'
 import { AgentHeader } from './header/AgentHeader'
 import { resetTime } from './header/time'
 import { MessageList, TodoStrip } from './transcript'
+import { RenderBoundary } from './transcript/RenderBoundary'
 
 /** The right-hand agent panel: chat tabs, transcript (or welcome / sign-in), todo strip and composer. */
 export function AgentPanel() {
@@ -78,12 +79,18 @@ export function AgentPanel() {
       <AgentHeader chatId={chatId} />
       {chatId && !loggedOut && <ChatBanner chatId={chatId} className={footerColumn} />}
       <div className="relative min-h-0 flex-1">
-        <div className={cn('flex h-full min-h-0 flex-col', bodyColumn)}>{body}</div>
+        <div className={cn('flex h-full min-h-0 flex-col', bodyColumn)}>
+          <RenderBoundary resetKey={chatId} what="this chat" className="m-3">
+            {body}
+          </RenderBoundary>
+        </div>
       </div>
       {chatId && !loggedOut && (
         <div className={cn('flex shrink-0 flex-col gap-1.5 px-2.5 pb-2.5 pt-1', footerColumn)}>
-          <TodoStrip chatId={chatId} />
-          <Composer key={chatId} chatId={chatId} />
+          <RenderBoundary key={chatId} what="the chat input">
+            <TodoStrip chatId={chatId} />
+            <Composer chatId={chatId} />
+          </RenderBoundary>
         </div>
       )}
       {dragging && (

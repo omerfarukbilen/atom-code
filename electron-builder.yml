@@ -16,6 +16,8 @@ extraResources:
     to: atom-plugin
   - from: resources/icon.png
     to: icon.png
+# Makes node-pty's macOS spawn-helper executable in the packaged app (it ships without the execute bit).
+afterPack: scripts/after-pack.cjs
 asarUnpack:
   - resources/**
   - '**/node_modules/@anthropic-ai/claude-agent-sdk-*/**'
@@ -37,6 +39,8 @@ nsis:
   shortcutName: ATOM Code
 linux:
   icon: resources/icon.png
+  # Required by the deb target (package.json `author` has no email).
+  maintainer: Ömer Faruk Bilen <omerfarukbilen@users.noreply.github.com>
   # glibc builds do not need the musl Claude Code binary (~260 MB).
   files:
     - '!**/node_modules/@anthropic-ai/claude-agent-sdk-linux-*-musl/**'

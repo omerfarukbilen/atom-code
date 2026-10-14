@@ -226,7 +226,7 @@ export const MonacoEditor = memo(function MonacoEditor({ path }: { path: string 
         if (!model || model.uri.scheme !== 'file') return
         const store = useEditorStore.getState()
         const tab = store.tabs.find((t) => t.kind === 'file' && samePath(t.path, model.uri.fsPath))
-        if (tab?.dirty) void store.saveFile(tab.path, { format: false })
+        if (tab?.dirty) void store.saveFile(tab.path, { format: false, auto: true })
       })
     )
 

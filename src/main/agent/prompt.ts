@@ -244,15 +244,27 @@ function renderAttachmentBlocks(
 }
 
 /**
- * Render a user message and its attachments into the prompt text sent to Claude Code.
- *
- * Layout: an `<atom_context>` preamble (active editor, selections, terminal output, diagnostics,
- * git diff), then a line of `@path` mentions for attached files/folders (the CLI expands them), then
- * the user's text — always last. Slash commands are the exception: the CLI only dispatches them when
- * the prompt starts with `/`, so the command stays first and attachments follow it (the implicit
- * active-editor hint is dropped there because it would pollute `$ARGUMENTS`).
+ * Render a user message and its attachments into the prompt text sent to Claude Code (the text blocks
+ * of `renderUserPromptBlocks` joined by a blank line).
  */
 export function renderUserPrompt(msg: RenderableUserMessage, options: RenderPromptOptions = {}): string {
+  return renderUserPromptBlocks(msg, options).join('\n\n')
+}
+
+/**
+ * Render a user message into the text blocks of the prompt sent to Claude Code.
+ *
+ * Layout: an `<atom_context>` preamble (active editor, selections, terminal output, diagnostics,
+ * git diff) as its own block, then a block with a line of `@path` mentions for attached files/folders
+ * (the CLI expands them) and the user's text — always last. Keeping the preamble in a separate block
+ * matters: Claude Code derives a session's first/last prompt (History titles and search) from the first
+ * text block that does not start with a tag, and treats the last text block as the user's input.
+ *
+ * Slash commands are the exception: the CLI only dispatches them when the prompt starts with `/`, so
+ * the command stays first and attachments follow it in one block (the implicit active-editor hint is
+ * dropped there because it would pollute `$ARGUMENTS`).
+ */
+export function renderUserPromptBlocks(msg: RenderableUserMessage, options: RenderPromptOptions = {}): string[] {
   const { workspace, includeActiveEditor = true } = options
   const text = msg.text ?? ''
   const slash = isSlashCommand(text)
@@ -272,14 +284,14 @@ export function renderUserPrompt(msg: RenderableUserMessage, options: RenderProm
   }
   contextBlocks.push(...blocks)
 
-  const parts: string[] = []
-  if (contextBlocks.length > 0) parts.push(`<atom_context>\n${contextBlocks.join('\n')}\n</atom_context>`)
-  if (mentions.length > 0) parts.push(`Attached: ${mentions.join(' ')}`)
+  const context = contextBlocks.length > 0 ? `<atom_context>\n${contextBlocks.join('\n')}\n</atom_context>` : null
+  const attached = mentions.length > 0 ? `Attached: ${mentions.join(' ')}` : null
 
   if (slash) {
-    const head = text.trim()
-    return parts.length > 0 ? `${head}\n\n${parts.join('\n\n')}` : head
+    const parts = [text.trim(), context, attached].filter((p): p is string => Boolean(p))
+    return [parts.join('\n\n')]
   }
-  if (text.trim()) parts.push(text)
-  return parts.join('\n\n')
+  const body = [attached, text.trim() ? text : null].filter((p): p is string => Boolean(p)).join('\n\n')
+  const out = [context, body].filter((p): p is string => Boolean(p))
+  return out.length > 0 ? out : ['']
 }

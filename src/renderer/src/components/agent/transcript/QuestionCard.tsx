@@ -229,10 +229,11 @@ export function QuestionCard({ request, autoFocus }: { request: PermissionReques
     }
     if (e.key === 'Enter' && !e.shiftKey && (e.target === e.currentTarget || isTypingTarget(e.target))) {
       e.preventDefault()
-      if (armed()) submit()
+      // In the card's own "Other" input Enter is deliberate; on the card itself it waits for a typing pause.
+      if (!e.repeat && (isTypingTarget(e.target) || armed())) submit()
       return
     }
-    if (!isTypingTarget(e.target) && /^[1-9]$/.test(e.key) && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    if (!isTypingTarget(e.target) && /^[1-9]$/.test(e.key) && !e.metaKey && !e.ctrlKey && !e.altKey && !e.repeat) {
       const q = questions[activeQ]
       const option = q?.options[Number(e.key) - 1]
       if (!q || !option) return
@@ -255,6 +256,7 @@ export function QuestionCard({ request, autoFocus }: { request: PermissionReques
       icon={MessageCircleQuestion}
       label="Questions from ATOM"
       onKeyDown={onKeyDown}
+      ownKeys={/^[1-9]$/}
       title={questions.length > 1 ? `ATOM has ${questions.length} questions` : 'ATOM has a question'}
       subtitle="Pick an option or write your own answer."
     >

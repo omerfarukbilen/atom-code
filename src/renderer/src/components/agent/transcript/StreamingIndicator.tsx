@@ -1,4 +1,4 @@
-import { isToolActive } from '../../../lib/agent-reducer'
+import { isToolActive, queuedMessageCount } from '../../../lib/agent-reducer'
 import type { ChatState } from '../../../lib/agent-types'
 import { useAgentStore } from '../../../stores/agent'
 import { AtomLogo } from '../../ui'
@@ -35,7 +35,10 @@ const LABELS: Record<Exclude<IndicatorState, null>, string> = {
 export function StreamingIndicator({ chatId }: { chatId: string }) {
   const state = useAgentStore((s) => indicatorState(s.chats[chatId]))
   const startedAt = useAgentStore((s) => s.chats[chatId]?.turnStartedAt ?? null)
-  const queued = useAgentStore((s) => s.chats[chatId]?.queuedCount ?? 0)
+  const queued = useAgentStore((s) => {
+    const c = s.chats[chatId]
+    return c ? queuedMessageCount(c) : 0
+  })
   const now = useNow(state !== null)
   if (!state) return null
   const secs = startedAt ? Math.max(0, Math.floor((now - startedAt) / 1000)) : 0

@@ -234,7 +234,8 @@ export function SkillsPanel() {
       />
 
       {/* Tabs */}
-      <div className="flex shrink-0 gap-0.5 px-2 pb-2">
+      {/* Counts only fit next to the labels in a wider sidebar (the group headers show them too). */}
+      <div className="@container flex shrink-0 gap-0.5 px-2 pb-2">
         {TABS.map((t) => {
           const selected = t.kind === tab
           return (
@@ -242,14 +243,19 @@ export function SkillsPanel() {
               key={t.kind}
               type="button"
               onClick={() => setTab(t.kind)}
+              title={`${t.label} (${counts[t.kind]})`}
               className={cn(
-                'flex flex-1 items-center justify-center gap-1.5 rounded-md px-1.5 py-1 text-[12px] font-medium transition-colors',
+                'flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md px-1.5 py-1 text-[12px] font-medium transition-colors',
                 selected ? 'bg-active text-fg' : 'text-muted hover:bg-hover hover:text-fg'
               )}
             >
-              {t.icon}
+              <span className="flex shrink-0 items-center">{t.icon}</span>
               <span className="truncate">{t.label}</span>
-              <span className={cn('rounded px-1 text-[10.5px] tabular-nums', selected ? 'bg-accent-soft text-accent' : 'bg-hover text-subtle')}>{counts[t.kind]}</span>
+              <span
+                className={cn('hidden shrink-0 rounded px-1 text-[10.5px] tabular-nums @xs:inline', selected ? 'bg-accent-soft text-accent' : 'bg-hover text-subtle')}
+              >
+                {counts[t.kind]}
+              </span>
             </button>
           )
         })}
@@ -341,6 +347,7 @@ export function SkillsPanel() {
                           onOpen={() => void openItem(item)}
                           menuEntries={menuFor(item, tab, enabled)}
                           query={q}
+                          showScope={false}
                         />
                       )
                     })
