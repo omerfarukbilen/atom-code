@@ -12,9 +12,9 @@ import { registerGitIpc } from './services/git'
 import { registerTerminalIpc, disposeTerminals } from './services/terminal'
 import { registerAuthIpc, disposeAuth } from './services/auth'
 import { registerLibraryIpc } from './services/library'
-import { registerAgentIpc, disposeAgents } from './agent/manager'
-import { registerAiIpc } from './agent/oneshot'
-import { registerIdeBridgeIpc } from './agent/ide-bridge'
+import { registerAgentIpc, disposeAgents, closeAllChats } from './agent/manager'
+import { registerAiIpc, disposeAi } from './agent/oneshot'
+import { registerIdeBridgeIpc, cancelPendingIdeRequests } from './agent/ide-bridge'
 
 const THEME_BACKGROUND: Record<string, string> = {
   'atom-dark': '#16171d',
@@ -82,7 +82,18 @@ function createWindow(): BrowserWindow {
       }
     }, 4000)
   })
-  win.on('closed', () => ctx.setWindow(null))
+  // A reloaded or closed renderer has no record of its chats, terminals or IDE requests: release them
+  // so CLIs, shells and permission prompts are never orphaned (macOS keeps the app alive on close).
+  const releaseRendererState = (): void => {
+    void closeAllChats()
+    disposeTerminals()
+    cancelPendingIdeRequests()
+  }
+  win.webContents.on('did-navigate', releaseRendererState)
+  win.on('closed', () => {
+    ctx.setWindow(null)
+    releaseRendererState()
+  })
 
   // External links open in the browser, never inside the app.
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -195,6 +206,8 @@ if (!gotLock) {
     stopWatching()
     disposeTerminals()
     disposeAuth()
+    disposeAi()
+    cancelPendingIdeRequests('ATOM Code is quitting.')
     await disposeAgents()
   })
 }

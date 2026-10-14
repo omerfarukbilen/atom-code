@@ -827,7 +827,11 @@ export class AgentSession {
 
     const settings = settingsService.get()
     const mode = this.currentMode()
-    this.modeId = mode.id
+    if (mode.id !== this.modeId) {
+      // The chat's custom mode was deleted: tell the renderer which mode actually runs.
+      this.modeId = mode.id
+      this.emitModeChanged()
+    }
     const permission = this.permission
     const resume = this.sessionId ?? undefined
 
@@ -1095,7 +1099,11 @@ export class AgentSession {
   }
 
   private handleResult(message: SDKResultMessage, q: Query, gen: number): void {
-    if (message.session_id) this.sessionId = message.session_id
+    if (message.session_id) {
+      this.sessionId = message.session_id
+      // The fork (if any) happened: later restarts continue this session instead of forking again.
+      this.forkPending = false
+    }
     const aborted =
       this.interruptRequested || message.terminal_reason === 'aborted_streaming' || message.terminal_reason === 'aborted_tools'
 
