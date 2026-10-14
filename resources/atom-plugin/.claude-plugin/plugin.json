@@ -1,0 +1,22 @@
+{
+  "name": "atom",
+  "version": "0.1.0",
+  "description": "ATOM Code built-in skills, subagents and slash commands",
+  "author": {
+    "name": "ATOM Code"
+  },
+  "license": "MIT",
+  "keywords": [
+    "atom-code",
+    "skills",
+    "subagents",
+    "slash-commands",
+    "debugging",
+    "testing",
+    "code-review",
+    "planning",
+    "refactoring",
+    "security",
+    "documentation"
+  ]
+}

@@ -1,0 +1,283 @@
+# OpenAPI 3.1 starter used by the atom:api-design skill.
+# Shows: resource naming, cursor pagination, filtering/sorting, RFC 9457 problem details,
+# Idempotency-Key on create, ETag/If-Match optimistic concurrency, rate-limit responses, and security schemes.
+# Replace "Invoice" with your resource; keep the shared components. Lint with:
+#   npx @redocly/cli lint openapi.yaml    or    npx @stoplight/spectral-cli lint openapi.yaml
+openapi: 3.1.0
+info:
+  title: Example Billing API
+  version: 1.0.0
+  description: |
+    Conventions: camelCase fields, RFC 3339 UTC timestamps, opaque string IDs, money in integer minor units.
+    Clients must ignore unknown response fields and tolerate unknown enum values.
+servers:
+  - url: https://api.example.com/v1
+security:
+  - bearerAuth: []
+
+paths:
+  /invoices:
+    get:
+      operationId: listInvoices
+      summary: List invoices
+      tags: [Invoices]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/InvoiceStatus" }
+        - name: customerId
+          in: query
+          schema: { type: string }
+        - name: sort
+          in: query
+          description: Comma-separated fields; prefix with `-` for descending. Allowed fields are createdAt, dueDate.
+          schema: { type: string, default: "-createdAt", example: "-createdAt" }
+      responses:
+        "200":
+          description: A page of invoices.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, hasMore]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/Invoice" }
+                  nextCursor:
+                    type: [string, "null"]
+                    description: Opaque cursor for the next page; null when there are no more results.
+                  hasMore: { type: boolean }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+    post:
+      operationId: createInvoice
+      summary: Create an invoice
+      tags: [Invoices]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InvoiceCreate" }
+      responses:
+        "201":
+          description: Created.
+          headers:
+            Location:
+              schema: { type: string }
+              description: URL of the new invoice.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Invoice" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /invoices/{invoiceId}:
+    parameters:
+      - name: invoiceId
+        in: path
+        required: true
+        schema: { type: string, example: inv_8f2k3j }
+    get:
+      operationId: getInvoice
+      summary: Get an invoice
+      tags: [Invoices]
+      responses:
+        "200":
+          description: The invoice.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Invoice" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      operationId: updateInvoice
+      summary: Partially update an invoice (JSON Merge Patch)
+      tags: [Invoices]
+      parameters:
+        - name: If-Match
+          in: header
+          required: true
+          description: ETag from a previous GET; prevents lost updates.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: "#/components/schemas/InvoiceUpdate" }
+      responses:
+        "200":
+          description: Updated invoice.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Invoice" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "412": { $ref: "#/components/responses/PreconditionFailed" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "428": { $ref: "#/components/responses/PreconditionRequired" }
+    delete:
+      operationId: deleteInvoice
+      summary: Delete a draft invoice
+      tags: [Invoices]
+      responses:
+        "204": { description: Deleted. }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      description: Page size.
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    Cursor:
+      name: cursor
+      in: query
+      description: Opaque cursor from a previous response's nextCursor.
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Unique key (UUID) making retries of this request safe for 24 hours.
+      schema: { type: string, maxLength: 255 }
+
+  headers:
+    ETag:
+      description: Entity tag of the current representation.
+      schema: { type: string }
+    RetryAfter:
+      description: Seconds to wait before retrying.
+      schema: { type: integer }
+
+  schemas:
+    InvoiceStatus:
+      type: string
+      description: Clients must handle unknown values.
+      enum: [draft, open, paid, void]
+    Money:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount: { type: integer, description: Amount in minor units (cents). }
+        currency: { type: string, pattern: "^[A-Z]{3}$", example: EUR }
+    Invoice:
+      type: object
+      required: [id, customerId, status, total, createdAt, updatedAt]
+      properties:
+        id: { type: string, readOnly: true, example: inv_8f2k3j }
+        customerId: { type: string }
+        status: { $ref: "#/components/schemas/InvoiceStatus" }
+        total: { $ref: "#/components/schemas/Money" }
+        dueDate: { type: [string, "null"], format: date }
+        createdAt: { type: string, format: date-time, readOnly: true }
+        updatedAt: { type: string, format: date-time, readOnly: true }
+    InvoiceCreate:
+      type: object
+      required: [customerId, lineItems]
+      additionalProperties: false
+      properties:
+        customerId: { type: string }
+        dueDate: { type: string, format: date }
+        lineItems:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            type: object
+            required: [description, quantity, unitPrice]
+            properties:
+              description: { type: string, maxLength: 500 }
+              quantity: { type: integer, minimum: 1 }
+              unitPrice: { $ref: "#/components/schemas/Money" }
+    InvoiceUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        dueDate: { type: [string, "null"], format: date }
+    Problem:
+      type: object
+      description: RFC 9457 Problem Details.
+      required: [type, title, status]
+      properties:
+        type: { type: string, format: uri-reference, default: "about:blank" }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string, format: uri-reference }
+        traceId: { type: string }
+        errors:
+          type: array
+          items:
+            type: object
+            required: [detail]
+            properties:
+              pointer:
+                type: string
+                description: 'JSON Pointer to the offending field, for example "#/lineItems/0/quantity".'
+              detail: { type: string }
+
+  responses:
+    BadRequest:
+      description: Malformed request.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    Unauthorized:
+      description: Missing or invalid credentials.
+      headers:
+        WWW-Authenticate:
+          schema: { type: string }
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    NotFound:
+      description: Resource not found (or not visible to the caller).
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    Conflict:
+      description: Conflicts with the current state of the resource.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    ValidationError:
+      description: Request is well-formed but invalid.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    PreconditionFailed:
+      description: If-Match did not match the current ETag; re-fetch and retry.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    PreconditionRequired:
+      description: If-Match header is required.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    TooManyRequests:
+      description: Rate limit exceeded.
+      headers:
+        Retry-After: { $ref: "#/components/headers/RetryAfter" }
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
