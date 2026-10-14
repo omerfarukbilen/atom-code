@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#20223a"/>
+      <stop offset="1" stop-color="#0c0d14"/>
+    </linearGradient>
+    <linearGradient id="stroke" x1="300" y1="250" x2="760" y2="780" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8f9cff"/>
+      <stop offset="1" stop-color="#4fd1c5"/>
+    </linearGradient>
+    <linearGradient id="orbit" x1="150" y1="500" x2="880" y2="620" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4fd1c5"/>
+      <stop offset="1" stop-color="#7c8cff"/>
+    </linearGradient>
+    <radialGradient id="nucleus" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.45" stop-color="#b9f5ef"/>
+      <stop offset="1" stop-color="#4fd1c5"/>
+    </radialGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.55" r="0.5">
+      <stop offset="0" stop-color="#7c8cff" stop-opacity="0.40"/>
+      <stop offset="1" stop-color="#7c8cff" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="blur" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="14"/></filter>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="208" fill="url(#bg)"/>
+  <rect x="65.5" y="65.5" width="893" height="893" rx="206.5" fill="none" stroke="#ffffff" stroke-opacity="0.09" stroke-width="3"/>
+  <circle cx="512" cy="560" r="360" fill="url(#glow)"/>
+  <!-- orbit (back half) -->
+  <g transform="rotate(-16 512 600)">
+    <path d="M 152 600 A 360 118 0 0 1 872 600" fill="none" stroke="url(#orbit)" stroke-width="26" stroke-linecap="round" opacity="0.55"/>
+  </g>
+  <!-- the A -->
+  <g filter="url(#blur)" opacity="0.55">
+    <path d="M 300 770 L 512 250 L 724 770" fill="none" stroke="url(#stroke)" stroke-width="84" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <path d="M 300 770 L 512 250 L 724 770" fill="none" stroke="url(#stroke)" stroke-width="84" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- orbit (front half) -->
+  <g transform="rotate(-16 512 600)">
+    <path d="M 152 600 A 360 118 0 0 0 872 600" fill="none" stroke="url(#orbit)" stroke-width="26" stroke-linecap="round"/>
+    <circle cx="872" cy="600" r="30" fill="#7c8cff"/>
+    <circle cx="872" cy="600" r="14" fill="#ffffff" opacity="0.85"/>
+  </g>
+  <!-- nucleus -->
+  <circle cx="512" cy="590" r="70" fill="#4fd1c5" opacity="0.35" filter="url(#blur)"/>
+  <circle cx="512" cy="590" r="56" fill="url(#nucleus)"/>
+</svg>
