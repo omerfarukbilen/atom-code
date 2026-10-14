@@ -1,0 +1,42 @@
+appId: dev.atomcode.app
+productName: ATOM Code
+copyright: Copyright © 2026 Ömer Faruk Bilen
+directories:
+  buildResources: build
+  output: release/${version}
+files:
+  - out/**/*
+  - resources/**/*
+  - package.json
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json,electron.vite.config.ts}'
+extraResources:
+  - from: resources/atom-plugin
+    to: atom-plugin
+asarUnpack:
+  - resources/**
+  - '**/node_modules/@anthropic-ai/claude-agent-sdk-*/**'
+  - '**/node_modules/node-pty/**'
+  - '**/node_modules/@vscode/ripgrep-*/**'
+mac:
+  category: public.app-category.developer-tools
+  icon: resources/icon.png
+  target:
+    - dmg
+    - zip
+win:
+  icon: resources/icon.png
+  target:
+    - nsis
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  shortcutName: ATOM Code
+linux:
+  icon: resources/icon.png
+  category: Development
+  target:
+    - AppImage
+    - deb
+npmRebuild: true

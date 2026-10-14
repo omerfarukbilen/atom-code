@@ -1,0 +1,504 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/inter';
+@import '@fontsource-variable/jetbrains-mono';
+@import '@xterm/xterm/css/xterm.css';
+
+/*
+ * ATOM Code design tokens.
+ * Every color in the UI comes from these variables so themes can be switched at runtime by setting
+ * <html data-theme="atom-dark|atom-midnight|atom-light">. Tailwind utilities are mapped below
+ * (e.g. bg-app, bg-sidebar, bg-elevated, text-fg, text-muted, border-line, text-accent, bg-accent-soft).
+ */
+:root,
+[data-theme='atom-dark'] {
+  color-scheme: dark;
+  --app: #16171d;
+  --sidebar: #1a1b22;
+  --panel: #1a1b22;
+  --titlebar: #13141a;
+  --elevated: #22232d;
+  --overlay: #262733;
+  --input: #111217;
+  --hover: rgb(255 255 255 / 0.05);
+  --active: rgb(255 255 255 / 0.09);
+  --selection: rgb(124 140 255 / 0.22);
+  --line: #2a2c37;
+  --line-strong: #3a3c4b;
+  --fg: #e6e7ee;
+  --muted: #a0a2b3;
+  --subtle: #6c6e80;
+  --accent: #7c8cff;
+  --accent-hover: #8f9cff;
+  --accent-soft: rgb(124 140 255 / 0.14);
+  --accent-fg: #ffffff;
+  --accent-2: #4fd1c5;
+  --success: #4ade80;
+  --success-soft: rgb(74 222 128 / 0.12);
+  --warning: #fbbf24;
+  --warning-soft: rgb(251 191 36 / 0.12);
+  --danger: #f87171;
+  --danger-soft: rgb(248 113 113 / 0.12);
+  --info: #60a5fa;
+  --info-soft: rgb(96 165 250 / 0.12);
+  --diff-add: rgb(74 222 128 / 0.13);
+  --diff-del: rgb(248 113 113 / 0.13);
+  --scrollbar: rgb(255 255 255 / 0.1);
+  --scrollbar-hover: rgb(255 255 255 / 0.18);
+  --shadow: 0 12px 40px rgb(0 0 0 / 0.45), 0 2px 8px rgb(0 0 0 / 0.3);
+  --glow: 0 0 0 1px rgb(124 140 255 / 0.35), 0 0 24px rgb(124 140 255 / 0.18);
+}
+
+[data-theme='atom-midnight'] {
+  color-scheme: dark;
+  --app: #0b0d14;
+  --sidebar: #0f121b;
+  --panel: #0f121b;
+  --titlebar: #090b11;
+  --elevated: #161a26;
+  --overlay: #1b2030;
+  --input: #080a10;
+  --hover: rgb(255 255 255 / 0.05);
+  --active: rgb(255 255 255 / 0.09);
+  --selection: rgb(79 209 197 / 0.2);
+  --line: #1d2231;
+  --line-strong: #2a3145;
+  --fg: #e3e8f4;
+  --muted: #95a0bb;
+  --subtle: #5d6680;
+  --accent: #4fd1c5;
+  --accent-hover: #6ee0d5;
+  --accent-soft: rgb(79 209 197 / 0.14);
+  --accent-fg: #04231f;
+  --accent-2: #7c8cff;
+  --success: #4ade80;
+  --success-soft: rgb(74 222 128 / 0.12);
+  --warning: #fbbf24;
+  --warning-soft: rgb(251 191 36 / 0.12);
+  --danger: #f87171;
+  --danger-soft: rgb(248 113 113 / 0.12);
+  --info: #60a5fa;
+  --info-soft: rgb(96 165 250 / 0.12);
+  --diff-add: rgb(74 222 128 / 0.12);
+  --diff-del: rgb(248 113 113 / 0.12);
+  --scrollbar: rgb(255 255 255 / 0.09);
+  --scrollbar-hover: rgb(255 255 255 / 0.16);
+  --shadow: 0 12px 40px rgb(0 0 0 / 0.6), 0 2px 8px rgb(0 0 0 / 0.4);
+  --glow: 0 0 0 1px rgb(79 209 197 / 0.35), 0 0 24px rgb(79 209 197 / 0.16);
+}
+
+[data-theme='atom-light'] {
+  color-scheme: light;
+  --app: #ffffff;
+  --sidebar: #f6f6f9;
+  --panel: #f6f6f9;
+  --titlebar: #efeff4;
+  --elevated: #ffffff;
+  --overlay: #ffffff;
+  --input: #ffffff;
+  --hover: rgb(0 0 0 / 0.045);
+  --active: rgb(0 0 0 / 0.08);
+  --selection: rgb(84 101 255 / 0.18);
+  --line: #e3e3ea;
+  --line-strong: #cfd0da;
+  --fg: #1d1f2a;
+  --muted: #5b5e70;
+  --subtle: #8c8fa1;
+  --accent: #5465ff;
+  --accent-hover: #4353ec;
+  --accent-soft: rgb(84 101 255 / 0.1);
+  --accent-fg: #ffffff;
+  --accent-2: #0f9f94;
+  --success: #16a34a;
+  --success-soft: rgb(22 163 74 / 0.1);
+  --warning: #b7791f;
+  --warning-soft: rgb(183 121 31 / 0.1);
+  --danger: #dc2626;
+  --danger-soft: rgb(220 38 38 / 0.08);
+  --info: #2563eb;
+  --info-soft: rgb(37 99 235 / 0.08);
+  --diff-add: rgb(22 163 74 / 0.12);
+  --diff-del: rgb(220 38 38 / 0.1);
+  --scrollbar: rgb(0 0 0 / 0.12);
+  --scrollbar-hover: rgb(0 0 0 / 0.22);
+  --shadow: 0 12px 40px rgb(20 20 40 / 0.14), 0 2px 8px rgb(20 20 40 / 0.08);
+  --glow: 0 0 0 1px rgb(84 101 255 / 0.35), 0 0 24px rgb(84 101 255 / 0.12);
+}
+
+@theme inline {
+  --color-app: var(--app);
+  --color-sidebar: var(--sidebar);
+  --color-panel: var(--panel);
+  --color-titlebar: var(--titlebar);
+  --color-elevated: var(--elevated);
+  --color-overlay: var(--overlay);
+  --color-input: var(--input);
+  --color-hover: var(--hover);
+  --color-active: var(--active);
+  --color-selection: var(--selection);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-subtle: var(--subtle);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-2: var(--accent-2);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-diff-add: var(--diff-add);
+  --color-diff-del: var(--diff-del);
+  --font-sans: 'Inter Variable', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace;
+  --shadow-pop: var(--shadow);
+  --shadow-glow: var(--glow);
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    width: 100%;
+    margin: 0;
+    overflow: hidden;
+  }
+
+  body {
+    background: var(--app);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    font-size: var(--ui-font-size, 13px);
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+    cursor: default;
+  }
+
+  input,
+  textarea,
+  [contenteditable='true'],
+  .selectable {
+    user-select: text;
+    cursor: auto;
+  }
+
+  ::selection {
+    background: var(--selection);
+  }
+
+  button {
+    cursor: default;
+  }
+
+  :focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: -1px;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--scrollbar);
+    border-radius: 10px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-hover);
+    background-clip: padding-box;
+    border: 2px solid transparent;
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}
+
+@layer components {
+  /* Draggable title-bar region; interactive children must use .no-drag */
+  .drag {
+    -webkit-app-region: drag;
+  }
+  .no-drag {
+    -webkit-app-region: no-drag;
+  }
+
+  .kbd {
+    @apply inline-flex items-center rounded border border-line bg-elevated px-1 font-mono text-[10px] leading-4 text-muted;
+  }
+
+  .atom-gradient-text {
+    background: linear-gradient(120deg, var(--accent) 0%, var(--accent-2) 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* Markdown content rendered in chat */
+  .markdown {
+    @apply text-[13px] leading-relaxed text-fg;
+    user-select: text;
+    overflow-wrap: anywhere;
+  }
+  .markdown > :first-child {
+    margin-top: 0;
+  }
+  .markdown > :last-child {
+    margin-bottom: 0;
+  }
+  .markdown p {
+    margin: 0.5em 0;
+  }
+  .markdown h1,
+  .markdown h2,
+  .markdown h3,
+  .markdown h4 {
+    @apply font-semibold text-fg;
+    margin: 0.9em 0 0.4em;
+    line-height: 1.3;
+  }
+  .markdown h1 {
+    font-size: 1.3em;
+  }
+  .markdown h2 {
+    font-size: 1.15em;
+  }
+  .markdown h3 {
+    font-size: 1.05em;
+  }
+  .markdown ul,
+  .markdown ol {
+    margin: 0.4em 0;
+    padding-left: 1.4em;
+  }
+  .markdown ul {
+    list-style: disc;
+  }
+  .markdown ol {
+    list-style: decimal;
+  }
+  .markdown li {
+    margin: 0.2em 0;
+  }
+  .markdown li > p {
+    margin: 0.15em 0;
+  }
+  .markdown a {
+    @apply text-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent;
+    cursor: pointer;
+  }
+  .markdown blockquote {
+    @apply border-l-2 border-line-strong pl-3 text-muted;
+    margin: 0.6em 0;
+  }
+  .markdown code:not(pre code) {
+    @apply rounded bg-active px-[0.35em] py-[0.1em] font-mono text-[0.88em] text-fg;
+  }
+  .markdown pre {
+    margin: 0.6em 0;
+  }
+  .markdown table {
+    @apply my-2 w-full border-collapse text-[12px];
+  }
+  .markdown th,
+  .markdown td {
+    @apply border border-line px-2 py-1 text-left;
+  }
+  .markdown th {
+    @apply bg-hover font-semibold;
+  }
+  .markdown hr {
+    @apply my-3 border-line;
+  }
+}
+
+/* highlight.js token colors (theme-aware) */
+.hljs {
+  color: var(--fg);
+  background: transparent;
+}
+.hljs-comment,
+.hljs-quote {
+  color: var(--subtle);
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-type {
+  color: #c792ea;
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-addition,
+.hljs-attribute,
+.hljs-meta .hljs-string {
+  color: #a5d6a7;
+}
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-variable.constant_ {
+  color: #f9a66c;
+}
+.hljs-title,
+.hljs-title.function_,
+.hljs-section {
+  color: #82aaff;
+}
+.hljs-built_in,
+.hljs-title.class_,
+.hljs-class .hljs-title {
+  color: #ffcb6b;
+}
+.hljs-attr,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-property {
+  color: #89ddff;
+}
+.hljs-deletion {
+  color: var(--danger);
+}
+.hljs-meta {
+  color: var(--muted);
+}
+[data-theme='atom-light'] .hljs-keyword,
+[data-theme='atom-light'] .hljs-selector-tag,
+[data-theme='atom-light'] .hljs-literal,
+[data-theme='atom-light'] .hljs-type {
+  color: #8839ef;
+}
+[data-theme='atom-light'] .hljs-string,
+[data-theme='atom-light'] .hljs-regexp,
+[data-theme='atom-light'] .hljs-addition,
+[data-theme='atom-light'] .hljs-attribute {
+  color: #2e7d32;
+}
+[data-theme='atom-light'] .hljs-number,
+[data-theme='atom-light'] .hljs-symbol {
+  color: #d9480f;
+}
+[data-theme='atom-light'] .hljs-title,
+[data-theme='atom-light'] .hljs-title.function_ {
+  color: #1e66f5;
+}
+[data-theme='atom-light'] .hljs-built_in,
+[data-theme='atom-light'] .hljs-title.class_ {
+  color: #b7791f;
+}
+[data-theme='atom-light'] .hljs-attr,
+[data-theme='atom-light'] .hljs-variable,
+[data-theme='atom-light'] .hljs-property {
+  color: #0b7285;
+}
+
+/* Animations */
+@keyframes atom-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.animate-atom-pulse {
+  animation: atom-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes atom-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+.animate-shimmer-text {
+  background: linear-gradient(90deg, var(--muted) 0%, var(--fg) 40%, var(--muted) 80%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: atom-shimmer 2.2s linear infinite;
+}
+
+@keyframes atom-orbit {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+.animate-orbit {
+  animation: atom-orbit 1.6s linear infinite;
+}
+
+@keyframes atom-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-fade-in {
+  animation: atom-fade-in 0.18s ease-out both;
+}
+
+/* react-resizable-panels separators */
+[data-separator] {
+  position: relative;
+  background: var(--line);
+  transition: background-color 0.15s;
+}
+[data-separator][aria-orientation='vertical'] {
+  width: 1px;
+}
+[data-separator][aria-orientation='horizontal'] {
+  height: 1px;
+}
+[data-separator]::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  z-index: 10;
+}
+[data-separator]:hover,
+[data-separator][data-separator-state='drag'],
+[data-separator][data-active] {
+  background: var(--accent);
+}
+
+/* Monaco tweaks */
+.monaco-editor .atom-agent-changed-line {
+  background: var(--diff-add);
+}
+.monaco-editor .atom-agent-changed-gutter {
+  border-left: 3px solid var(--accent);
+  margin-left: 3px;
+}
+.xterm {
+  padding: 6px 0 0 10px;
+}
+.xterm .xterm-viewport {
+  background-color: transparent !important;
+}
