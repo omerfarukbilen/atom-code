@@ -315,7 +315,7 @@ export function WebFetchTool({ tool }: { tool: ToolCall }) {
             <DetailSection label="Result">
               <div className={long && !expanded ? 'relative max-h-[220px] overflow-hidden' : undefined}>
                 <Markdown content={result} className="!text-[12px]" />
-                {long && !expanded && <div className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-panel to-transparent" />}
+                {long && !expanded && <div className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-elevated to-transparent" />}
               </div>
               {long && (
                 <button type="button" onClick={() => setExpanded((v) => !v)} className="mt-1 text-[11px] text-accent hover:underline">

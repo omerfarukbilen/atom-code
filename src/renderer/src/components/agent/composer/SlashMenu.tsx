@@ -1,4 +1,4 @@
-import { useEffect, useMemo, type RefObject } from 'react'
+import { useEffect, useMemo, useRef, type RefObject } from 'react'
 import { Check } from 'lucide-react'
 import type { AgentModeDefinition, ModelOption, SlashCommandInfo } from '@shared/types'
 import { normalizeModelValue } from '@shared/modes'
@@ -57,8 +57,13 @@ export function SlashMenu({ chatId, popup, anchor, handleRef, onSelect, onClose 
   const libraryLoading = useLibraryStore((s) => s.loading)
   const needsFallback = !sdkCommands?.length
 
+  // One attempt per open menu: a failing refresh flips `loading` back to false with no index, which would
+  // otherwise re-run this effect and retry in a tight loop.
+  const libraryRequested = useRef(false)
   useEffect(() => {
-    if (needsFallback && !library && !libraryLoading) void useLibraryStore.getState().refresh()
+    if (!needsFallback || library || libraryLoading || libraryRequested.current) return
+    libraryRequested.current = true
+    void useLibraryStore.getState().refresh()
   }, [needsFallback, library, libraryLoading])
 
   const commands = useMemo<SlashCommandInfo[]>(() => {

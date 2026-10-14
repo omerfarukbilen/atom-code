@@ -20,26 +20,37 @@ export interface ModalProps {
 
 export function Modal({ open, onClose, title, description, children, footer, width = 'max-w-lg', dismissible = true, className, hideClose }: ModalProps) {
   const panelRef = useRef<HTMLDivElement>(null)
+  // Callers usually pass an inline `onClose`; reading it through a ref keeps the effect below from re-running
+  // (and re-stealing focus) on every parent render.
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
 
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape' && dismissible) {
         e.stopPropagation()
-        onClose()
+        onCloseRef.current()
       }
     }
     window.addEventListener('keydown', onKey, true)
     const prev = document.activeElement as HTMLElement | null
-    requestAnimationFrame(() => {
-      const el = panelRef.current?.querySelector<HTMLElement>('[autofocus], input, textarea, button')
+    const frame = requestAnimationFrame(() => {
+      const panel = panelRef.current
+      // Respect focus the content already placed (e.g. a React `autoFocus` button).
+      if (!panel || panel.contains(document.activeElement)) return
+      const el =
+        panel.querySelector<HTMLElement>('[autofocus]') ??
+        panel.querySelector<HTMLElement>('input:not([disabled]), textarea:not([disabled]), select:not([disabled])') ??
+        panel.querySelector<HTMLElement>('button:not([disabled])')
       el?.focus()
     })
     return () => {
+      cancelAnimationFrame(frame)
       window.removeEventListener('keydown', onKey, true)
       prev?.focus?.()
     }
-  }, [open, dismissible, onClose])
+  }, [open, dismissible])
 
   if (!open) return null
   return createPortal(

@@ -40,7 +40,8 @@ const api: AtomAPI = {
     onMaximizedChange: (cb) => on(IPC.appMaximizedEvent, cb),
     onMenuCommand: (cb) => on(IPC.appMenuCommandEvent, cb),
     onBeforeClose: (cb) => on(IPC.appBeforeCloseEvent, () => cb()),
-    confirmClose: (allow) => invoke(IPC.appConfirmClose, allow)
+    confirmClose: (allow) => invoke(IPC.appConfirmClose, allow),
+    ackClose: () => invoke(IPC.appCloseAck)
   },
 
   workspace: {

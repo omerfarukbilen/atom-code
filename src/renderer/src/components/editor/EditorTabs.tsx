@@ -16,7 +16,7 @@ import type { EditorTab } from '../../stores/contracts'
 import { atom } from '../../lib/api'
 import { cn } from '../../lib/cn'
 import { FileIcon } from '../../lib/file-icons'
-import { isMac, isWindows } from '../../lib/platform'
+import { formatKeybinding, isMac, isWindows } from '../../lib/platform'
 import { useEditorStore } from '../../stores/editor'
 import { useSettingsStore } from '../../stores/settings'
 import { IconButton, Menu, useContextMenu, useMenu, type MenuEntry } from '../ui'
@@ -230,7 +230,7 @@ export function EditorTabs() {
               {desc && <span className="min-w-0 shrink truncate text-[11px] text-subtle">{desc}</span>}
               <button
                 type="button"
-                title={tab.dirty ? 'Unsaved changes — close' : 'Close (mod+W)'}
+                title={tab.dirty ? 'Unsaved changes — close' : `Close (${formatKeybinding('mod+w')})`}
                 aria-label="Close"
                 onMouseDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
@@ -259,10 +259,10 @@ export function EditorTabs() {
 
       <div className="flex shrink-0 items-center gap-0.5 border-l border-line px-1.5">
         {active?.kind === 'file' && (
-          <IconButton title="Edit with ATOM (mod+K)" icon={<Sparkles size={14} />} onClick={() => startInlineEdit()} />
+          <IconButton title={`Edit with ATOM (${formatKeybinding('mod+k')})`} icon={<Sparkles size={14} />} onClick={() => startInlineEdit()} />
         )}
         {active && (active.kind === 'file' || active.kind === 'image') && (
-          <IconButton title="Add File to Chat" icon={<MessageSquarePlus size={14} />} onClick={() => addToChat(active.path)} />
+          <IconButton title={`Add File to Chat (${formatKeybinding('mod+l')} adds the selection)`} icon={<MessageSquarePlus size={14} />} onClick={() => addToChat(active.path)} />
         )}
         <IconButton title="More Actions" icon={<MoreHorizontal size={15} />} onClick={more.openFromEvent} active={more.open} />
       </div>

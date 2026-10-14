@@ -3,6 +3,7 @@ import { DiffEditor as MonacoDiffEditor, type DiffOnMount } from '@monaco-editor
 import { ArrowDown, ArrowUp, Columns2, FileText, Lock, Rows2 } from 'lucide-react'
 import { basename } from '@shared/paths'
 import type { monaco } from '../../lib/monaco'
+import { formatKeybinding } from '../../lib/platform'
 import { getActiveDiffEditor, getDiffModels, setActiveDiffEditor, useEditorStore } from '../../stores/editor'
 import { useSettingsStore } from '../../stores/settings'
 import { Badge, IconButton, Spinner } from '../ui'
@@ -77,6 +78,8 @@ export function DiffEditor({ tabId }: { tabId: string }) {
     editor.onDidUpdateDiff(update)
     if (editor.getLineChanges()) update()
     editor.getModifiedEditor().onDidFocusEditorWidget(() => setActiveDiffEditor(editor))
+    // Reached by keyboard (Ctrl+Tab) with nothing focused: let the user keep navigating in the diff.
+    if (!document.activeElement || document.activeElement === document.body) editor.getModifiedEditor().focus()
   }
 
   if (!data || !tab || !getDiffModels(tabId)) {
@@ -101,7 +104,7 @@ export function DiffEditor({ tabId }: { tabId: string }) {
             <Lock size={10} /> Read-only
           </Badge>
         ) : (
-          <Badge tone="accent" title="Edit the right side and save with mod+S">
+          <Badge tone="accent" title={`Edit the right side and save with ${formatKeybinding('mod+s')}`}>
             Editable
           </Badge>
         )}
@@ -118,7 +121,6 @@ export function DiffEditor({ tabId }: { tabId: string }) {
       </div>
       <div className="min-h-0 flex-1">
         <MonacoDiffEditor
-          key={tabId}
           originalModelPath={data.originalUri}
           modifiedModelPath={data.modifiedUri}
           keepCurrentOriginalModel

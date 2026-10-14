@@ -121,7 +121,8 @@ function createRuntime(id: string): TerminalRuntime {
     term.onData((data) => {
       const inst = useTerminalStore.getState().instances.find((i) => i.id === id)
       if (inst && inst.exitCode !== null) {
-        closeInstance(id)
+        // Defer: disposing the terminal from inside its own onData emitter is unsafe.
+        setTimeout(() => closeInstance(id), 0)
         return
       }
       void atom.terminal.write(id, data)
@@ -250,6 +251,13 @@ export function isTerminalFocused(): boolean {
   return !!el && !!el.closest('.atom-xterm-host')
 }
 
+/** Text currently selected in a terminal (active terminal by default), or ''. */
+export function getTerminalSelection(id?: string): string {
+  const target = id ?? useTerminalStore.getState().activeId
+  const rt = target ? runtimes.get(target) : undefined
+  return rt?.term.hasSelection() ? rt.term.getSelection() : ''
+}
+
 /** Plain text of the last `maxChars` characters of a terminal's buffer (active terminal by default). */
 export function getTerminalBufferText(maxChars = 8000, id?: string): string {
   const target = id ?? useTerminalStore.getState().activeId
@@ -327,13 +335,13 @@ interface PanelUiState {
   /** True while the bottom panel takes (almost) the whole editor column. */
   maximized: boolean
   toggleMaximized(): void
-  /** Reflect the measured state (set by the BottomPanel). */
+  /** Reflect the measured state (set by the workbench layout). */
   setMaximized(v: boolean): void
 }
 
 let maximizeHandler: (() => void) | null = null
 
-/** The mounted BottomPanel implements maximize/restore; it registers itself here. */
+/** The workbench implements maximize/restore (it owns the editor/panel split); it registers itself here. */
 export function registerPanelMaximizeHandler(handler: () => void): () => void {
   maximizeHandler = handler
   return () => {
@@ -343,15 +351,7 @@ export function registerPanelMaximizeHandler(handler: () => void): () => void {
 
 export const usePanelUiStore = create<PanelUiState>((set, get) => ({
   maximized: false,
-  toggleMaximized: () => {
-    if (maximizeHandler) {
-      maximizeHandler()
-      return
-    }
-    const maximized = !get().maximized
-    set({ maximized })
-    window.dispatchEvent(new CustomEvent('atom:panel-maximize', { detail: { maximized } }))
-  },
+  toggleMaximized: () => maximizeHandler?.(),
   setMaximized: (maximized) => {
     if (get().maximized !== maximized) set({ maximized })
   }

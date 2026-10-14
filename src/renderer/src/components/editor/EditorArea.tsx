@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type DragEvent } from 'react'
 import { FileDown } from 'lucide-react'
 import { cn } from '../../lib/cn'
-import { samePath, useEditorStore } from '../../stores/editor'
+import { getActiveCodeEditor, samePath, useEditorStore } from '../../stores/editor'
 import { Breadcrumbs } from './Breadcrumbs'
 import { registerEditorCommands } from './commands'
 import { DiffEditor } from './DiffEditor'
@@ -25,10 +25,20 @@ export function EditorArea() {
   const lastFilePath = useRef<string | null>(null)
   const [dropping, setDropping] = useState(false)
 
-  // App registers these at boot; registering here too (idempotent) keeps ⌘S & co. working regardless.
+  // App registers these at boot; registering here too (idempotent) keeps ⌘S & co. working if the editor
+  // area is ever mounted on its own.
   useEffect(() => {
     registerEditorCommands()
   }, [])
+
+  // The code editor stays mounted (invisible) behind diff/image/welcome tabs. If it still holds keyboard
+  // focus when another kind of tab becomes active (e.g. Ctrl+Tab), typing would silently edit the hidden file.
+  const activeKind = active?.kind
+  useEffect(() => {
+    if (activeKind === 'file') return
+    const el = document.activeElement
+    if (el instanceof HTMLElement && getActiveCodeEditor()?.hasWidgetFocus()) el.blur()
+  }, [activeKind, activeTabId])
 
   if (active?.kind === 'file') lastFilePath.current = active.path
   const fileTab =
@@ -72,12 +82,12 @@ export function EditorArea() {
         )}
         {active?.kind === 'diff' && (
           <div className="absolute inset-0">
-            <DiffEditor tabId={active.id} />
+            <DiffEditor key={active.id} tabId={active.id} />
           </div>
         )}
         {active?.kind === 'image' && (
           <div className="absolute inset-0">
-            <ImagePreview tabId={active.id} path={active.path} />
+            <ImagePreview key={active.id} tabId={active.id} path={active.path} />
           </div>
         )}
         {showWelcome && (

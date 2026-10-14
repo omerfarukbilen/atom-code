@@ -77,7 +77,7 @@ function CompactDivider({ item }: { item: NoticeItem }) {
         <div className="h-px flex-1 bg-line" />
       </div>
       {open && item.detail && (
-        <div className="mt-2 max-h-[360px] overflow-y-auto rounded-lg border border-line bg-panel px-3 py-2 animate-fade-in">
+        <div className="mt-2 max-h-[360px] overflow-y-auto rounded-lg border border-line bg-elevated px-3 py-2 animate-fade-in">
           <Markdown content={item.detail} className="!text-[12px] !text-muted" />
         </div>
       )}
@@ -148,7 +148,7 @@ function ModeNotice({ item }: { item: NoticeItem }) {
     item.permission === 'plan' ? 'read-only planning' : PERMISSION_POLICIES.find((p) => p.id === item.permission)?.label.toLowerCase()
   return (
     <div className="flex justify-center py-0.5">
-      <span className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-line bg-panel px-2.5 py-0.5 text-[11px] text-muted">
+      <span className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-line bg-elevated px-2.5 py-0.5 text-[11px] text-muted">
         <Icon size={12} style={{ color: mode.color }} className="shrink-0" />
         <span className="truncate">
           Switched to{' '}
@@ -164,7 +164,7 @@ function ModeNotice({ item }: { item: NoticeItem }) {
 
 function CommandOutput({ item }: { item: NoticeItem }) {
   return (
-    <div className="overflow-hidden rounded-lg border border-line bg-panel">
+    <div className="overflow-hidden rounded-lg border border-line bg-elevated">
       <div className="flex h-7 items-center gap-1.5 border-b border-line px-2.5 text-[11.5px] text-muted">
         <SquareTerminal size={13} className="text-subtle" />
         {item.text || 'Command output'}

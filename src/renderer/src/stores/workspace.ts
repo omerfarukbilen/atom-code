@@ -93,32 +93,46 @@ function applyWorkspace(info: WorkspaceInfo | null): void {
 // The main process may switch workspaces on its own (e.g. a second instance passing a folder).
 const offWorkspaceChanged = atom.workspace.onChanged((ws) => applyWorkspace(ws))
 
+/** `.git` internals are never part of the quick-open index (ripgrep lists with `--glob !.git`). */
+function isGitInternal(path: string): boolean {
+  return /(^|\/)\.git(\/|$)/.test(normalizeSlashes(path))
+}
+
 /**
  * Keep the quick-open file list fresh incrementally. (A full re-list would hit main's 5 s cache and return
- * stale data right after a change.)
+ * stale data right after a change.) A batch is applied in one pass — later events for a path win — so a
+ * large checkout does not copy the (up to 50k entry) list once per event.
  */
 const offFsChange = atom.fs.onChange((events: FsChangeEvent[]) => {
   const { workspace, files } = useWorkspaceStore.getState()
   if (!workspace || files.length === 0) return
-  let next: string[] | null = null
-  let known: Set<string> | null = null
+  const present = new Map<string, boolean>()
+  const removedDirs: string[] = []
   for (const e of events) {
-    if (!isInside(workspace.path, e.path)) continue
-    if (e.kind === 'add') {
-      known ??= new Set(next ?? files)
-      if (!known.has(e.path)) {
-        next = [...(next ?? files), e.path]
-        known.add(e.path)
-      }
-    } else if (e.kind === 'unlink') {
-      next = (next ?? files).filter((f) => f !== e.path)
-      known = null
-    } else if (e.kind === 'unlinkDir') {
-      next = (next ?? files).filter((f) => !isInside(e.path, f))
-      known = null
+    if (!isInside(workspace.path, e.path) || isGitInternal(e.path)) continue
+    if (e.kind === 'add') present.set(e.path, true)
+    else if (e.kind === 'unlink') present.set(e.path, false)
+    else if (e.kind === 'unlinkDir') {
+      removedDirs.push(e.path)
+      for (const p of present.keys()) if (isInside(e.path, p)) present.set(p, false)
     }
   }
-  if (next) useWorkspaceStore.setState({ files: next })
+  if (!present.size && !removedDirs.length) return
+  let changed = false
+  const next: string[] = []
+  for (const f of files) {
+    const state = present.get(f)
+    const keep = state ?? !removedDirs.some((d) => isInside(d, f))
+    if (keep) next.push(f)
+    else changed = true
+    if (state !== undefined) present.delete(f)
+  }
+  for (const [p, isPresent] of present) {
+    if (!isPresent) continue
+    next.push(p)
+    changed = true
+  }
+  if (changed) useWorkspaceStore.setState({ files: next })
 })
 
 if (import.meta.hot) {

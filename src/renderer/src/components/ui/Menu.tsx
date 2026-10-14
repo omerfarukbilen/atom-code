@@ -57,43 +57,56 @@ export function Menu({ open, position, entries, onClose, minWidth = 200, classNa
     setStyle({ left, top })
   }, [open, position, entries.length])
 
+  // Keep the latest items/handlers in refs so the keyboard listener never acts on stale entries.
+  const itemsRef = useRef(items)
+  itemsRef.current = items
+  const activeRef = useRef(active)
+  activeRef.current = active
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+
   useEffect(() => {
     if (!open) return
-    setActive(Math.max(0, items.findIndex((i) => i.checked)))
+    setActive(Math.max(0, itemsRef.current.findIndex((i) => i.checked)))
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
     const onKey = (e: KeyboardEvent): void => {
+      const list = itemsRef.current
       if (e.key === 'Escape') {
         e.preventDefault()
         e.stopPropagation()
-        onClose()
+        onCloseRef.current()
       } else if (e.key === 'ArrowDown') {
         e.preventDefault()
-        setActive((a) => (a + 1) % Math.max(1, items.length))
+        setActive((a) => (a + 1) % Math.max(1, list.length))
       } else if (e.key === 'ArrowUp') {
         e.preventDefault()
-        setActive((a) => (a - 1 + items.length) % Math.max(1, items.length))
+        setActive((a) => (a - 1 + list.length) % Math.max(1, list.length))
       } else if (e.key === 'Enter') {
         e.preventDefault()
         e.stopPropagation()
-        const item = items[active]
+        const item = list[activeRef.current]
         if (item) {
-          onClose()
+          onCloseRef.current()
           item.onSelect?.()
         }
       }
     }
     const onDown = (e: MouseEvent): void => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose()
+      if (ref.current && !ref.current.contains(e.target as Node)) onCloseRef.current()
     }
+    const onBlur = (): void => onCloseRef.current()
     window.addEventListener('keydown', onKey, true)
     window.addEventListener('mousedown', onDown, true)
-    window.addEventListener('blur', onClose)
+    window.addEventListener('blur', onBlur)
     return () => {
       window.removeEventListener('keydown', onKey, true)
       window.removeEventListener('mousedown', onDown, true)
-      window.removeEventListener('blur', onClose)
+      window.removeEventListener('blur', onBlur)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, active, items.length])
+  }, [open])
 
   if (!open || !position) return null
   return createPortal(

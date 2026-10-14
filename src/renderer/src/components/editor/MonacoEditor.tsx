@@ -138,31 +138,56 @@ export const MonacoEditor = memo(function MonacoEditor({ path }: { path: string 
     []
   )
 
+  /** Actions and listeners registered on mount; disposed with the component (Monaco does not do it for us). */
+  const mountDisposables = useRef<monaco.IDisposable[]>([])
+
+  useEffect(
+    () => () => {
+      mountDisposables.current.forEach((d) => d.dispose())
+      mountDisposables.current = []
+    },
+    []
+  )
+
   const onMount: OnMount = (editor) => {
     editorRef.current = editor
     reviewKeyRef.current = editor.createContextKey<boolean>('atomInlineReview', false)
+    const subs = mountDisposables.current
 
-    // Review-phase keys of the inline edit (only active while a proposal is shown).
-    editor.addCommand(monaco.KeyCode.Tab, () => sessionRef.current?.accept(), 'atomInlineReview && !suggestWidgetVisible && !inlineSuggestionVisible')
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => sessionRef.current?.accept(), 'atomInlineReview')
-    editor.addCommand(monaco.KeyCode.Escape, () => sessionRef.current?.reject(), 'atomInlineReview && !suggestWidgetVisible && !findWidgetVisible')
+    // Review-phase keys of the inline edit (only active while a proposal is shown). `addAction` scopes the
+    // keybindings to this editor instance and returns a disposable — `addCommand` would register global,
+    // never-disposed keybindings that pile up every time the editor remounts.
+    const reviewAction = (id: string, label: string, keybinding: number, when: string, run: () => void): void => {
+      subs.push(editor.addAction({ id, label, keybindings: [keybinding], precondition: 'atomInlineReview', keybindingContext: when, run }))
+    }
+    reviewAction('atom.inlineEdit.acceptTab', 'Accept ATOM Edit', monaco.KeyCode.Tab, '!suggestWidgetVisible && !inlineSuggestionVisible', () =>
+      sessionRef.current?.accept()
+    )
+    reviewAction('atom.inlineEdit.accept', 'Accept ATOM Edit', monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, 'true', () => sessionRef.current?.accept())
+    reviewAction('atom.inlineEdit.reject', 'Reject ATOM Edit', monaco.KeyCode.Escape, '!suggestWidgetVisible && !findWidgetVisible', () =>
+      sessionRef.current?.reject()
+    )
 
-    editor.addAction({
-      id: 'atom.inlineEdit',
-      label: 'Edit with ATOM',
-      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK],
-      contextMenuGroupId: '0_atom',
-      contextMenuOrder: 1,
-      run: () => startInlineEdit()
-    })
-    editor.addAction({
-      id: 'atom.addToChat',
-      label: 'Add to Chat',
-      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyL],
-      contextMenuGroupId: '0_atom',
-      contextMenuOrder: 2,
-      run: () => addToChat()
-    })
+    // ⌘K / ⌘L are dispatched by the global keybinding registry (editor.inlineEdit / editor.addToChat), which
+    // runs before Monaco; the bindings here make them discoverable in the context menu.
+    subs.push(
+      editor.addAction({
+        id: 'atom.inlineEdit',
+        label: 'Edit with ATOM',
+        keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK],
+        contextMenuGroupId: '0_atom',
+        contextMenuOrder: 1,
+        run: () => startInlineEdit()
+      }),
+      editor.addAction({
+        id: 'atom.addToChat',
+        label: 'Add to Chat',
+        keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyL],
+        contextMenuGroupId: '0_atom',
+        contextMenuOrder: 2,
+        run: () => addToChat()
+      })
+    )
 
     let raf = 0
     const publishCursor = (): void => {
@@ -184,23 +209,26 @@ export const MonacoEditor = memo(function MonacoEditor({ path }: { path: string 
         })
       })
     }
+    subs.push({ dispose: () => cancelAnimationFrame(raf) })
 
-    editor.onDidChangeCursorSelection(publishCursor)
-    editor.onDidFocusEditorText(publishCursor)
-    editor.onDidChangeModel(() => {
-      // Switching files keeps a previewed inline edit (it is an ordinary undoable edit).
-      sessionRef.current?.accept()
-      flushPendingReveal(editor)
-      publishCursor()
-    })
-    editor.onDidBlurEditorWidget(() => {
-      if (useSettingsStore.getState().settings.editor.autoSave !== 'onFocusChange') return
-      const model = editor.getModel()
-      if (!model || model.uri.scheme !== 'file') return
-      const store = useEditorStore.getState()
-      const tab = store.tabs.find((t) => t.kind === 'file' && samePath(t.path, model.uri.fsPath))
-      if (tab?.dirty) void store.saveFile(tab.path, { format: false })
-    })
+    subs.push(
+      editor.onDidChangeCursorSelection(publishCursor),
+      editor.onDidFocusEditorText(publishCursor),
+      editor.onDidChangeModel(() => {
+        // Switching files keeps a previewed inline edit (it is an ordinary undoable edit).
+        sessionRef.current?.accept()
+        flushPendingReveal(editor)
+        publishCursor()
+      }),
+      editor.onDidBlurEditorWidget(() => {
+        if (useSettingsStore.getState().settings.editor.autoSave !== 'onFocusChange') return
+        const model = editor.getModel()
+        if (!model || model.uri.scheme !== 'file') return
+        const store = useEditorStore.getState()
+        const tab = store.tabs.find((t) => t.kind === 'file' && samePath(t.path, model.uri.fsPath))
+        if (tab?.dirty) void store.saveFile(tab.path, { format: false })
+      })
+    )
 
     setActiveCodeEditor(editor)
     publishCursor()

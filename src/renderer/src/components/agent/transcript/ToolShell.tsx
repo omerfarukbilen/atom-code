@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useState, type KeyboardEvent, type ReactNode } from 'react'
 import { Ban, Check, ChevronRight, Copy, ShieldAlert, Square, X, type LucideIcon } from 'lucide-react'
 import { cn } from '../../../lib/cn'
 import { FileIcon } from '../../../lib/file-icons'
@@ -133,6 +133,18 @@ export function ToolShell({
     if (expandable) setUserOpen(!open)
   }
   const onHeaderClick = onTitleClick ?? (expandable ? toggle : undefined)
+  const headerA11y = onHeaderClick
+    ? {
+        role: 'button' as const,
+        tabIndex: 0,
+        'aria-expanded': expandable && !onTitleClick ? open : undefined,
+        onKeyDown: (e: KeyboardEvent<HTMLDivElement>) => {
+          if (e.target !== e.currentTarget || (e.key !== 'Enter' && e.key !== ' ')) return
+          e.preventDefault()
+          onHeaderClick()
+        }
+      }
+    : {}
   const chevron = expandable ? (
     <button
       type="button"
@@ -155,6 +167,7 @@ export function ToolShell({
         <div
           title={titleTooltip}
           onClick={onHeaderClick}
+          {...headerA11y}
           className={cn(
             'group flex min-h-[26px] min-w-0 items-center gap-2 rounded-md px-1.5 text-[12.5px] text-muted transition-colors',
             onHeaderClick && 'cursor-pointer hover:bg-hover hover:text-fg',
@@ -169,16 +182,17 @@ export function ToolShell({
           {chevron}
         </div>
         {showError && <ErrorText tool={tool} />}
-        {open && <div className="mb-1 ml-[22px] mt-1 overflow-hidden rounded-md border border-line bg-panel animate-fade-in">{children}</div>}
+        {open && <div className="mb-1 ml-[22px] mt-1 overflow-hidden rounded-md border border-line bg-elevated animate-fade-in">{children}</div>}
       </div>
     )
   }
 
   return (
-    <div className={cn('min-w-0 overflow-hidden rounded-lg border bg-panel', awaiting ? 'border-warning/50' : 'border-line', className)}>
+    <div className={cn('min-w-0 overflow-hidden rounded-lg border bg-elevated', awaiting ? 'border-warning/50' : 'border-line', className)}>
       <div
         title={titleTooltip}
         onClick={onHeaderClick}
+        {...headerA11y}
         className={cn(
           'group flex min-w-0 items-center gap-2 px-2.5 text-[12.5px] text-fg transition-colors',
           depth > 0 ? 'h-7 text-[12px]' : 'h-8',
@@ -284,7 +298,7 @@ export function OutputBlock({
         type="button"
         title={copied ? 'Copied' : 'Copy output'}
         onClick={() => copy(clean)}
-        className="absolute right-1.5 top-1.5 z-10 flex h-5 w-5 items-center justify-center rounded bg-panel text-subtle opacity-0 hover:bg-hover hover:text-fg group-hover/out:opacity-100"
+        className="absolute right-1.5 top-1.5 z-10 flex h-5 w-5 items-center justify-center rounded bg-elevated text-subtle opacity-0 hover:bg-hover hover:text-fg group-hover/out:opacity-100"
       >
         {copied ? <Check size={11} className="text-success" /> : <Copy size={11} />}
       </button>

@@ -1,6 +1,7 @@
 import { useEffect, useRef, type RefObject } from 'react'
 import { Group, Panel, Separator, useGroupRef, usePanelRef, type Layout, type LayoutChangedMeta, type PanelImperativeHandle, type PanelSize } from 'react-resizable-panels'
 import { useLayoutStore } from '../../stores/layout'
+import { registerPanelMaximizeHandler, usePanelUiStore } from '../../stores/terminal'
 import { AgentPanel } from '../agent/AgentPanel'
 import { EditorArea } from '../editor/EditorArea'
 import { BottomPanel } from '../panel/BottomPanel'
@@ -51,6 +52,8 @@ function saveSizes(sizes: StoredSizes): void {
 
 const AGENT_DEFAULT = '32%'
 const PANEL_DEFAULT = '32%'
+/** Minimum editor height (px) above the bottom panel; at this height the panel counts as maximized. */
+const EDITOR_MIN = 120
 
 export function Workbench() {
   const sizes = useRef<StoredSizes>(loadSizes())
@@ -61,8 +64,12 @@ export function Workbench() {
   const sidebarRef = usePanelRef()
   const agentRef = usePanelRef()
   const bottomRef = usePanelRef()
+  const editorRef = usePanelRef()
+  const centerGroupRef = useGroupRef()
   /** Main-group layout (percentages) before the agent was maximized. */
   const preMaximize = useRef<Record<string, number> | null>(null)
+  /** Bottom panel share (percent of the editor column) before it was maximized. */
+  const prePanelMaximize = useRef<number | null>(null)
 
   const sidebarVisible = useLayoutStore((s) => s.sidebarVisible)
   const panelVisible = useLayoutStore((s) => s.panelVisible)
@@ -89,6 +96,17 @@ export function Workbench() {
   useEffect(() => {
     syncCollapsible(bottomRef, panelVisible, sizes.current.panel ?? PANEL_DEFAULT)
   }, [panelVisible, bottomRef])
+
+  // Showing the panel (or switching its tab, e.g. "Show Problems") from the agent layout reveals the editor
+  // column again — otherwise the request would change an invisible panel.
+  useEffect(
+    () =>
+      useLayoutStore.subscribe((s, prev) => {
+        if (!s.agentMaximized || !prev.agentMaximized || !s.panelVisible) return
+        if (!prev.panelVisible || s.panelTab !== prev.panelTab) s.setAgentMaximized(false)
+      }),
+    []
+  )
 
   // ── Agent + maximized agent layout ────────────────────────────────────────
   useEffect(() => {
@@ -131,6 +149,41 @@ export function Workbench() {
     return () => cancelAnimationFrame(frame)
   }, [agentVisible, agentMaximized, groupRef, agentRef])
 
+  // ── Bottom panel maximize / restore ───────────────────────────────────────
+  const isPanelMaximized = (): boolean => {
+    const editor = editorRef.current
+    const panel = bottomRef.current
+    if (!editor || !panel || panel.isCollapsed()) return false
+    return editor.getSize().inPixels <= EDITOR_MIN + 4 && panel.getSize().inPixels > 160
+  }
+  const syncPanelMaximized = (): void => usePanelUiStore.getState().setMaximized(isPanelMaximized())
+
+  useEffect(
+    () =>
+      registerPanelMaximizeHandler(() => {
+        const group = centerGroupRef.current
+        const panel = bottomRef.current
+        if (!group || !panel) return
+        const layout = group.getLayout()
+        if (!('editor' in layout) || !('panel' in layout)) return
+        const l = useLayoutStore.getState()
+        // The panel lives in the editor column, which the agent layout hides.
+        if (l.agentMaximized) l.setAgentMaximized(false)
+        if (isPanelMaximized()) {
+          const share = prePanelMaximize.current ?? 32
+          prePanelMaximize.current = null
+          group.setLayout({ editor: 100 - share, panel: share })
+        } else {
+          prePanelMaximize.current = panel.isCollapsed() ? null : layout.panel
+          // The editor is clamped to its minimum height by the panel constraints.
+          group.setLayout({ editor: 0, panel: 100 })
+          if (!l.panelVisible) useLayoutStore.setState({ panelVisible: true })
+        }
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [centerGroupRef, bottomRef, editorRef]
+  )
+
   // ── Resize callbacks: remember sizes and reflect drag-collapses in the store ─
   const onSidebarResize = (size: PanelSize, _id: string | number | undefined, prev: PanelSize | undefined): void => {
     if (size.inPixels >= 170) {
@@ -163,7 +216,9 @@ export function Workbench() {
   }
 
   const onBottomResize = (size: PanelSize, _id: string | number | undefined, prev: PanelSize | undefined): void => {
-    if (size.inPixels >= 100) {
+    syncPanelMaximized()
+    // A maximized panel is not a size worth restoring next time.
+    if (size.inPixels >= 100 && !usePanelUiStore.getState().maximized) {
       sizes.current = { ...sizes.current, panel: Math.round(size.inPixels) }
       saveSizes(sizes.current)
     }
@@ -207,8 +262,8 @@ export function Workbench() {
             minSize={260}
             groupResizeBehavior={agentMaximized ? 'preserve-pixel-size' : 'preserve-relative-size'}
           >
-            <Group orientation="vertical" id="atom-center" className="h-full">
-              <Panel id="editor" minSize={120}>
+            <Group orientation="vertical" id="atom-center" groupRef={centerGroupRef} className="h-full">
+              <Panel id="editor" panelRef={editorRef} minSize={EDITOR_MIN} onResize={syncPanelMaximized}>
                 <div className="h-full min-h-0 bg-app">
                   <EditorArea />
                 </div>

@@ -63,6 +63,15 @@ function saveExpanded(root: string, expanded: Record<string, boolean>): void {
 
 const inflight = new Map<string, Promise<void>>()
 
+/** True when two listings show the same rows (size/mtime are not displayed). */
+function sameListing(a: FileEntry[] | undefined, b: FileEntry[]): boolean {
+  if (!a || a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].path !== b[i].path || a[i].isDirectory !== b[i].isDirectory || !!a[i].isSymlink !== !!b[i].isSymlink) return false
+  }
+  return true
+}
+
 export const useExplorerStore = create<ExplorerState>((set, get) => ({
   root: null,
   children: {},
@@ -99,7 +108,8 @@ export const useExplorerStore = create<ExplorerState>((set, get) => ({
       .then((entries) => {
         const root = get().root
         if (!root || !isInside(root, path)) return
-        set({ children: { ...get().children, [path]: entries } })
+        // Keep the old array when nothing visible changed so memoized rows do not re-render.
+        if (!sameListing(get().children[path], entries)) set({ children: { ...get().children, [path]: entries } })
         if (path === get().root) set({ rootError: null })
       })
       .catch((err: unknown) => {
@@ -212,14 +222,17 @@ function syncRoot(): void {
 const offWorkspace = useWorkspaceStore.subscribe(syncRoot)
 syncRoot()
 
-/** Re-read every loaded folder that an fs event touched. */
+/**
+ * Re-read every loaded folder whose listing an fs event changed. Content changes (`change`, e.g. every save)
+ * do not alter a listing and are ignored, so saving a file does not re-read and re-render the tree.
+ */
 const offFs = atom.fs.onChange((events: FsChangeEvent[]) => {
   const state = useExplorerStore.getState()
   if (!state.root) return
   const dirs = new Set<string>()
   const removed: string[] = []
   for (const e of events) {
-    if (!isInside(state.root, e.path)) continue
+    if (e.kind === 'change' || !isInside(state.root, e.path)) continue
     const parent = dirname(e.path)
     if (state.children[parent]) dirs.add(parent)
     if (e.kind === 'unlinkDir') removed.push(e.path)

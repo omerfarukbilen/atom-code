@@ -119,7 +119,9 @@ export function revealInExplorer(path: string): void {
 /** Toggle / focus the terminal panel (VS Code Ctrl+` behaviour). */
 export async function toggleTerminal(): Promise<void> {
   const layout = useLayoutStore.getState()
-  if (layout.panelVisible && layout.panelTab === 'terminal' && isTerminalFocused()) {
+  // The agent layout hides the editor column the terminal lives in.
+  if (layout.agentMaximized) layout.setAgentMaximized(false)
+  else if (layout.panelVisible && layout.panelTab === 'terminal' && isTerminalFocused()) {
     layout.setPanelVisible(false)
     getActiveMonacoEditor()?.focus()
     return
@@ -131,7 +133,9 @@ export async function toggleTerminal(): Promise<void> {
 }
 
 export async function newTerminal(): Promise<void> {
-  useLayoutStore.getState().showPanel('terminal')
+  const layout = useLayoutStore.getState()
+  if (layout.agentMaximized) layout.setAgentMaximized(false)
+  layout.showPanel('terminal')
   await useTerminalStore.getState().create({ focus: true })
 }
 

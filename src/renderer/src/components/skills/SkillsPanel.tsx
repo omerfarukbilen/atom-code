@@ -46,7 +46,10 @@ const TAB_KEY = 'atom.skills.tab.v1'
 
 function loadCollapsed(): Record<string, boolean> {
   try {
-    return JSON.parse(localStorage.getItem(COLLAPSE_KEY) ?? '{}') as Record<string, boolean>
+    const parsed: unknown = JSON.parse(localStorage.getItem(COLLAPSE_KEY) ?? '{}')
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {}
+    // Keep only boolean flags: corrupt / foreign values must not break the panel.
+    return Object.fromEntries(Object.entries(parsed).filter((e): e is [string, boolean] => typeof e[1] === 'boolean'))
   } catch {
     return {}
   }

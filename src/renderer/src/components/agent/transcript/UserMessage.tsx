@@ -10,7 +10,7 @@ import { useAgentStore } from '../../../stores/agent'
 import { Button, Modal, Spinner } from '../../ui'
 import { useCopy, useTranscript } from './context'
 import { displayPath, lineRangeLabel, openPath } from './file-links'
-import { plural, truncate } from './format'
+import { clockTime, plural, truncate } from './format'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Attachments
@@ -240,7 +240,7 @@ export const UserMessage = memo(function UserMessage({ item }: { item: UserItem 
           </button>
         )}
       </div>
-      <div className="mt-0.5 flex h-6 items-center gap-1 text-[11px] text-subtle">
+      <div className="mt-0.5 flex h-5 items-center gap-1 text-[11px] text-subtle">
         {item.queued && (
           <span className="flex items-center gap-1 text-info" title="Will be sent to ATOM as soon as possible">
             <Clock size={11} /> Queued
@@ -253,6 +253,7 @@ export const UserMessage = memo(function UserMessage({ item }: { item: UserItem 
           </span>
         )}
         <div className="flex items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover/user:opacity-100">
+          {!item.fromHistory && <span className="px-1 tabular-nums">{clockTime(item.createdAt)}</span>}
           <button
             type="button"
             title={copied ? 'Copied' : 'Copy message'}

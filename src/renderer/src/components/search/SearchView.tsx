@@ -14,6 +14,17 @@ export function SearchView() {
   const workspace = useWorkspaceStore((s) => s.workspace)
   const s = useSearchStore()
   const inputRef = useRef<HTMLInputElement>(null)
+  const resultsRef = useRef<HTMLDivElement>(null)
+
+  /** ↑/↓ move between result rows (file headers and matches); ↑ on the first row returns to the query. */
+  const moveFocus = (from: Element | null, delta: 1 | -1): void => {
+    const rows = Array.from(resultsRef.current?.querySelectorAll<HTMLElement>('button[data-search-row]') ?? [])
+    if (!rows.length) return
+    const i = from ? rows.indexOf(from as HTMLElement) : -1
+    const next = i + delta
+    if (next < 0) inputRef.current?.focus()
+    else rows[Math.min(next, rows.length - 1)].focus()
+  }
 
   useEffect(() => {
     const el = inputRef.current
@@ -56,6 +67,9 @@ export function SearchView() {
               if (e.key === 'Enter') {
                 e.preventDefault()
                 void s.run()
+              } else if (e.key === 'ArrowDown' && files.length) {
+                e.preventDefault()
+                moveFocus(null, 1)
               } else if (e.key === 'Escape' && s.query) {
                 e.preventDefault()
                 s.clear()
@@ -94,7 +108,15 @@ export function SearchView() {
 
       <SummaryLine />
 
-      <div className="min-h-0 flex-1 overflow-y-auto pb-4">
+      <div
+        ref={resultsRef}
+        className="min-h-0 flex-1 overflow-y-auto pb-4"
+        onKeyDown={(e) => {
+          if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+          e.preventDefault()
+          moveFocus(document.activeElement, e.key === 'ArrowDown' ? 1 : -1)
+        }}
+      >
         {!workspace ? (
           <EmptyState title="No folder opened" description="Open a folder to search across its files." />
         ) : s.error ? (
@@ -182,9 +204,11 @@ const FileResult = memo(function FileResult({ file, collapsed }: { file: SearchF
     <div>
       <button
         type="button"
+        data-search-row
         title={file.path}
+        aria-expanded={!collapsed}
         onClick={() => toggle(file.path)}
-        className="group flex h-[22px] w-full items-center gap-1 pl-2 pr-3 text-left hover:bg-hover"
+        className="group flex h-[22px] w-full items-center gap-1 pl-2 pr-3 text-left outline-none hover:bg-hover focus-visible:bg-active"
       >
         <ChevronRight size={14} className={cn('shrink-0 text-subtle transition-transform duration-100', !collapsed && 'rotate-90')} />
         <FileIcon name={name} size={15} />
@@ -205,10 +229,11 @@ const MatchRow = memo(function MatchRow({ path, match }: { path: string; match: 
   return (
     <button
       type="button"
-      title={`Line ${match.line}`}
-      onClick={() => open(true)}
+      data-search-row
+      title={`Line ${match.line} — click to preview, double-click or Enter to open`}
+      onClick={(e) => open(e.detail !== 0)}
       onDoubleClick={() => open(false)}
-      className="flex h-[22px] w-full items-center gap-2 pl-[38px] pr-3 text-left hover:bg-hover"
+      className="flex h-[22px] w-full items-center gap-2 pl-[38px] pr-3 text-left outline-none hover:bg-hover focus-visible:bg-active"
     >
       <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-muted">
         {before}

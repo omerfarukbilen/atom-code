@@ -312,6 +312,13 @@ export function Composer({ chatId }: { chatId: string }) {
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (e.nativeEvent.isComposing || e.keyCode === 229) return
     if (popup && popupHandle.current?.onKeyDown(e)) return
+    // An open dropdown (mode / model / effort / permission picker) owns navigation keys while the caret stays
+    // here: its window listener already handled ↑ ↓ ↩ Esc, and Tab must neither cycle modes nor move focus.
+    if (e.nativeEvent.defaultPrevented) return
+    if (document.querySelector('[role="menu"]')) {
+      if (e.key === 'Tab' || e.key === 'Enter' || e.key === 'ArrowUp' || e.key === 'ArrowDown') e.preventDefault()
+      return
+    }
     const el = e.currentTarget
     const plain = !e.altKey && !e.metaKey && !e.ctrlKey
 

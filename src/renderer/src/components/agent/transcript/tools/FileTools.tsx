@@ -185,11 +185,29 @@ export function EditTool({ tool }: { tool: ToolCall }) {
         editor.openDiff({ path: resolvePath(m.path, workspace), title, original: original ?? '', modified: m.content })
         return
       }
+      const abs = resolvePath(m.path, workspace)
       const base = m.originalFile ?? (m.preApply && typeof m.current === 'string' ? m.current : null)
       if (base !== null) {
         let modified = base
         for (const e of m.edits) modified = applyEdit(modified, e.oldString, e.newString, e.replaceAll)
-        editor.openDiff({ path: resolvePath(m.path, workspace), title, original: base, modified })
+        editor.openDiff({ path: abs, title, original: base, modified })
+        return
+      }
+      // Already applied (e.g. loaded from history): reconstruct the original from the file on disk when the
+      // edited text is still there, otherwise fall back to a snippet diff.
+      const onDisk = await atom.fs
+        .readFile(abs)
+        .then((f) => (f.isBinary || f.tooLarge ? null : f.content))
+        .catch(() => null)
+      const applied = tool.status === 'success'
+      if (applied && onDisk !== null && m.edits.length && m.edits.every((e) => !e.newString || onDisk.includes(e.newString))) {
+        let original = onDisk
+        for (const e of [...m.edits].reverse()) if (e.newString) original = applyEdit(original, e.newString, e.oldString, e.replaceAll)
+        editor.openDiff({ path: abs, title, original, modified: onDisk })
+      } else if (!applied && onDisk !== null && m.edits.length && m.edits.every((e) => !e.oldString || onDisk.includes(e.oldString))) {
+        let modified = onDisk
+        for (const e of m.edits) modified = applyEdit(modified, e.oldString, e.newString, e.replaceAll)
+        editor.openDiff({ path: abs, title, original: onDisk, modified })
       } else {
         editor.openDiff({
           path: resolvePath(m.path, workspace),

@@ -199,16 +199,19 @@ function LanguageItem() {
 function ModeModelItem() {
   const customModes = useSettingsStore((s) => s.settings.customModes)
   const defaults = useSettingsStore((s) => s.settings.agent)
-  const chat = useAgentStore((s) => (s.activeChatId ? s.chats[s.activeChatId] : undefined))
+  // Select primitives only: the chat object itself changes on every streamed token.
+  const hasChat = useAgentStore((s) => !!(s.activeChatId && s.chats[s.activeChatId]))
+  const chatModeId = useAgentStore((s) => (s.activeChatId ? s.chats[s.activeChatId]?.modeId : undefined))
+  const chatModel = useAgentStore((s) => (s.activeChatId ? s.chats[s.activeChatId]?.model : undefined))
   const menu = useMenu('top-end')
-  const modeId = chat?.modeId ?? defaults.defaultModeId
+  const modeId = chatModeId ?? defaults.defaultModeId
   const mode = findMode(modeId, customModes)
-  const modelValue = chat ? chat.model : defaults.defaultModel
+  const modelValue = hasChat ? (chatModel ?? '') : defaults.defaultModel
   const modelLabel = FALLBACK_MODELS.find((m) => m.value === modelValue)?.label ?? (modelValue || 'Default')
 
   const entries: MenuEntry[] = useMemo(
     () => [
-      { type: 'header', id: 'h', label: chat ? 'Mode for this chat' : 'Default mode' },
+      { type: 'header', id: 'h', label: hasChat ? 'Mode for this chat' : 'Default mode' },
       ...getAllModes(customModes).map(
         (m): MenuEntry => ({
           id: m.id,
@@ -217,13 +220,13 @@ function ModeModelItem() {
           checked: m.id === mode.id,
           icon: <ModeIcon name={m.icon} size={14} style={{ color: m.color }} />,
           onSelect: () => {
-            if (chat) useAgentStore.getState().setMode(m.id)
+            if (hasChat) useAgentStore.getState().setMode(m.id)
             else void useSettingsStore.getState().update({ agent: { defaultModeId: m.id } })
           }
         })
       )
     ],
-    [chat, customModes, mode.id]
+    [hasChat, customModes, mode.id]
   )
 
   return (

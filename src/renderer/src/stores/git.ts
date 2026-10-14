@@ -48,6 +48,10 @@ const root = (): string | null => useWorkspaceStore.getState().workspace?.path ?
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
 let refreshSeq = 0
 
+function sameStatus(a: GitStatus, b: GitStatus): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
 function firstLine(text: string): string {
   return text.split(/\r?\n/).find((l) => l.trim())?.trim() ?? ''
 }
@@ -92,7 +96,10 @@ export const useGitStore = create<GitState>((set, get) => {
       try {
         const status = await atom.git.status(r)
         if (seq !== refreshSeq) return
-        set({ status, loading: false, lastError: null })
+        // fs events refresh the status constantly; keep the previous object when nothing changed so the
+        // explorer decorations and the SCM list do not re-render.
+        const prev = get().status
+        set({ status: prev && sameStatus(prev, status) ? prev : status, loading: false, lastError: null })
       } catch (err) {
         if (seq !== refreshSeq) return
         set({ loading: false, lastError: errorMessage(err) })
@@ -229,24 +236,35 @@ export const useGitStore = create<GitState>((set, get) => {
 
 export type GitDecoration = { letter: string; tone: 'success' | 'warning' | 'danger' | 'info' | 'muted'; label: string }
 
+// Shared, immutable decoration objects: stable references keep memoized rows from re-rendering.
+const DECO = {
+  conflict: { letter: '!', tone: 'danger', label: 'Conflict' },
+  untracked: { letter: 'U', tone: 'success', label: 'Untracked' },
+  added: { letter: 'A', tone: 'success', label: 'Added' },
+  deleted: { letter: 'D', tone: 'danger', label: 'Deleted' },
+  renamed: { letter: 'R', tone: 'info', label: 'Renamed' },
+  copied: { letter: 'C', tone: 'info', label: 'Copied' },
+  modified: { letter: 'M', tone: 'warning', label: 'Modified' }
+} as const satisfies Record<string, GitDecoration>
+
 /** Single-letter decoration for a change (explorer, SCM list). */
 export function decorationFor(change: GitFileChange): GitDecoration {
-  if (change.conflicted) return { letter: '!', tone: 'danger', label: 'Conflict' }
-  if (change.untracked) return { letter: 'U', tone: 'success', label: 'Untracked' }
+  if (change.conflicted) return DECO.conflict
+  if (change.untracked) return DECO.untracked
   const code = change.workingTree !== ' ' ? change.workingTree : change.index
   switch (code) {
     case 'A':
-      return { letter: 'A', tone: 'success', label: 'Added' }
+      return DECO.added
     case 'D':
-      return { letter: 'D', tone: 'danger', label: 'Deleted' }
+      return DECO.deleted
     case 'R':
-      return { letter: 'R', tone: 'info', label: 'Renamed' }
+      return DECO.renamed
     case 'C':
-      return { letter: 'C', tone: 'info', label: 'Copied' }
+      return DECO.copied
     case 'U':
-      return { letter: '!', tone: 'danger', label: 'Conflict' }
+      return DECO.conflict
     default:
-      return { letter: 'M', tone: 'warning', label: 'Modified' }
+      return DECO.modified
   }
 }
 
@@ -254,13 +272,13 @@ export function decorationFor(change: GitFileChange): GitDecoration {
 export function stagedDecorationFor(change: GitFileChange): GitDecoration {
   switch (change.index) {
     case 'A':
-      return { letter: 'A', tone: 'success', label: 'Added' }
+      return DECO.added
     case 'D':
-      return { letter: 'D', tone: 'danger', label: 'Deleted' }
+      return DECO.deleted
     case 'R':
-      return { letter: 'R', tone: 'info', label: 'Renamed' }
+      return DECO.renamed
     default:
-      return { letter: 'M', tone: 'warning', label: 'Modified' }
+      return DECO.modified
   }
 }
 

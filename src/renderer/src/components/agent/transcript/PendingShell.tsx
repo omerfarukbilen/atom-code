@@ -22,13 +22,19 @@ export function useCardFocus(autoFocus: boolean): { ref: RefObject<HTMLDivElemen
 /** Respond once (cards disappear optimistically; this guards double clicks). */
 export function useResponder(requestId: string): [boolean, (response: PermissionResponse) => void] {
   const [busy, setBusy] = useState(false)
+  // A ref, not the state: two clicks / Enter + click in the same frame both see `busy === false`.
+  const inFlight = useRef(false)
   const respond = (response: PermissionResponse): void => {
-    if (busy) return
+    if (inFlight.current) return
+    inFlight.current = true
     setBusy(true)
     void useAgentStore
       .getState()
       .respondPermission(requestId, response)
-      .finally(() => setBusy(false))
+      .finally(() => {
+        inFlight.current = false
+        setBusy(false)
+      })
   }
   return [busy, respond]
 }

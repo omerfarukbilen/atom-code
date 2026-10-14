@@ -21,7 +21,7 @@ function helpMarkdown(): string {
     '',
     '**Context**',
     '- Type `@` to attach files, folders, the current file, your selection, terminal output, problems or the git diff',
-    '- Paste or drop images (PNG, JPEG, GIF, WebP — up to 5 MB) and drag files from the Explorer',
+    '- Paste or drop images (PNG, JPEG, GIF, WebP — large ones are downscaled automatically) and drag files from the Explorer',
     '',
     '**Commands**',
     '- `/new` or `/clear` start a fresh chat · `/mode <id>` · `/model <id>` · `/compact` summarize the conversation',

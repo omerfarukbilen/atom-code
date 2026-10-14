@@ -1,7 +1,7 @@
 /**
  * Turning pasted / dropped / picked data into composer attachments: images become base64
- * `ImageAttachment`s (≤ 5 MB, png/jpeg/gif/webp), paths dragged from the Explorer become file / folder
- * context attachments.
+ * `ImageAttachment`s (png/jpeg/gif/webp, downscaled to fit the API's 5 MB / 2000 px limits), paths dragged
+ * from the Explorer become file / folder context attachments.
  */
 import type { ContextAttachment, ImageAttachment } from '@shared/types'
 import { basename, extname, isInside, relativePath } from '@shared/paths'
@@ -12,7 +12,12 @@ import { useWorkspaceStore } from '../../../stores/workspace'
 import { pluralize } from './utils'
 
 export const IMAGE_MEDIA_TYPES: ImageAttachment['mediaType'][] = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
-export const MAX_IMAGE_BYTES = 5 * 1024 * 1024
+/** The API rejects an image whose base64 payload is larger than 5 MB (the encoded size, not the file size). */
+export const MAX_IMAGE_BASE64_CHARS = 5 * 1024 * 1024
+/** Longer edges are downscaled: the model cannot use more detail and big images waste context and IPC. */
+export const MAX_IMAGE_EDGE = 2000
+/** Files above this are refused before decoding (slow and memory hungry). */
+export const MAX_IMAGE_FILE_BYTES = 40 * 1024 * 1024
 
 const EXT_TO_MEDIA: Record<string, ImageAttachment['mediaType']> = {
   '.png': 'image/png',
@@ -45,15 +50,71 @@ export function isImageFile(file: File): boolean {
   return file.type.startsWith('image/') || !!EXT_TO_MEDIA[extname(file.name)]
 }
 
-/** Read an image file as an attachment. Throws an Error with a user-facing message when unsupported. */
+function base64Length(bytes: number): number {
+  return Math.ceil(bytes / 3) * 4
+}
+
+function asMediaType(type: string, fallback: ImageAttachment['mediaType']): ImageAttachment['mediaType'] {
+  return IMAGE_MEDIA_TYPES.find((m) => m === type) ?? fallback
+}
+
+/**
+ * Downscale / re-encode an image so that its long edge is ≤ MAX_IMAGE_EDGE and its base64 payload fits the API
+ * limit. Small images are returned untouched (GIFs keep their animation). Falls back to the original file when
+ * the image cannot be decoded here.
+ */
+async function fitImage(file: File, mediaType: ImageAttachment['mediaType']): Promise<{ blob: Blob; mediaType: ImageAttachment['mediaType'] }> {
+  const original = { blob: file as Blob, mediaType }
+  if (typeof createImageBitmap === 'undefined' || typeof OffscreenCanvas === 'undefined') return original
+  let bitmap: ImageBitmap
+  try {
+    bitmap = await createImageBitmap(file)
+  } catch {
+    return original
+  }
+  try {
+    const longEdge = Math.max(bitmap.width, bitmap.height)
+    if (longEdge <= MAX_IMAGE_EDGE && base64Length(file.size) <= MAX_IMAGE_BASE64_CHARS) return original
+    // PNG keeps transparency and crisp UI text (screenshots); JPEG / WebP when PNG is still too big.
+    const encodings: { type: string; quality?: number }[] =
+      mediaType === 'image/jpeg' ? [{ type: 'image/jpeg', quality: 0.88 }] : [{ type: 'image/png' }, { type: 'image/webp', quality: 0.9 }, { type: 'image/jpeg', quality: 0.85 }]
+    let scale = Math.min(1, MAX_IMAGE_EDGE / longEdge)
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const w = Math.max(1, Math.round(bitmap.width * scale))
+      const h = Math.max(1, Math.round(bitmap.height * scale))
+      const canvas = new OffscreenCanvas(w, h)
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return original
+      ctx.drawImage(bitmap, 0, 0, w, h)
+      for (const enc of encodings) {
+        const blob = await canvas.convertToBlob(enc.quality === undefined ? { type: enc.type } : { type: enc.type, quality: enc.quality })
+        if (base64Length(blob.size) <= MAX_IMAGE_BASE64_CHARS) return { blob, mediaType: asMediaType(blob.type, 'image/png') }
+      }
+      scale *= 0.7
+    }
+    return original
+  } finally {
+    bitmap.close()
+  }
+}
+
+/**
+ * Read an image file as an attachment (downscaled when large). Throws an Error with a user-facing message when
+ * the image is unsupported or cannot be made small enough for the API.
+ */
 export async function imageFromFile(file: File): Promise<ImageAttachment> {
   const mediaType = mediaTypeOf(file)
   const name = file.name || 'Pasted image'
   if (!mediaType) throw new Error(`${name}: only PNG, JPEG, GIF and WebP images are supported.`)
-  if (file.size > MAX_IMAGE_BYTES) throw new Error(`${name} is ${(file.size / 1024 / 1024).toFixed(1)} MB — images must be 5 MB or smaller.`)
-  const dataUrl = await readAsDataUrl(file)
+  if (file.size > MAX_IMAGE_FILE_BYTES) {
+    throw new Error(`${name} is ${(file.size / 1024 / 1024).toFixed(1)} MB — images must be ${MAX_IMAGE_FILE_BYTES / 1024 / 1024} MB or smaller.`)
+  }
+  const fitted = await fitImage(file, mediaType)
+  const dataUrl = await readAsDataUrl(fitted.blob)
   const comma = dataUrl.indexOf(',')
-  return { mediaType, data: comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl, name: file.name || undefined }
+  const data = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl
+  if (data.length > MAX_IMAGE_BASE64_CHARS) throw new Error(`${name} is too large to send, even after resizing (the limit is 5 MB).`)
+  return { mediaType: fitted.mediaType, data, name: file.name || undefined }
 }
 
 /** Add image files to a chat's composer; reports problems with a toast. Returns how many were added. */

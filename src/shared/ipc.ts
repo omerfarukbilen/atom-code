@@ -64,6 +64,7 @@ export const IPC = {
   appMenuCommandEvent: 'app:menuCommandEvent',
   appSetTitle: 'app:setTitle',
   appConfirmClose: 'app:confirmClose',
+  appCloseAck: 'app:closeAck',
   appBeforeCloseEvent: 'app:beforeCloseEvent',
 
   // workspace
@@ -197,6 +198,8 @@ export interface AtomAPI {
     /** Main asks before closing the window; renderer answers with confirmClose(true|false). */
     onBeforeClose(cb: () => void): Unsubscribe
     confirmClose(allow: boolean): Promise<void>
+    /** Tell main the close request was received and a decision is pending (e.g. an unsaved-changes dialog). */
+    ackClose(): Promise<void>
   }
 
   workspace: {

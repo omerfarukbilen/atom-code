@@ -39,6 +39,7 @@ import {
   isRunning,
   patchUserItem,
   reduceAgentEvent,
+  reopenPermissionRequest,
   titleFromPrompt
 } from '../lib/agent-reducer'
 import type { ChatState } from '../lib/agent-types'
@@ -260,17 +261,56 @@ function tabsKey(workspace: string): string {
   return TABS_KEY_PREFIX + workspace
 }
 
+const MAX_RESTORED_TABS = 24
+const EFFORT_VALUES: ReadonlySet<string> = new Set(['auto', 'low', 'medium', 'high', 'xhigh', 'max'])
+const POLICY_VALUES: ReadonlySet<string> = new Set(['default', 'acceptEdits', 'auto', 'bypassPermissions'])
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+function nonEmptyString(v: unknown): string | null {
+  return typeof v === 'string' && v.trim() ? v : null
+}
+
+/** Validate one stored tab field by field (storage may hold data from older versions or be hand-edited). */
+function sanitizeTab(raw: unknown, defaults: Pick<PersistedTab, 'modeId' | 'model' | 'effort' | 'permission'>): PersistedTab | null {
+  if (!isRecord(raw)) return null
+  const id = nonEmptyString(raw.id)
+  if (!id || id.length > 128) return null
+  const tab: PersistedTab = {
+    id,
+    title: typeof raw.title === 'string' ? raw.title.slice(0, 200) : DEFAULT_CHAT_TITLE,
+    titleEdited: raw.titleEdited === true,
+    sessionId: nonEmptyString(raw.sessionId),
+    modeId: nonEmptyString(raw.modeId) ?? defaults.modeId,
+    model: typeof raw.model === 'string' ? raw.model : defaults.model,
+    effort: typeof raw.effort === 'string' && EFFORT_VALUES.has(raw.effort) ? (raw.effort as PersistedTab['effort']) : defaults.effort,
+    permission:
+      typeof raw.permission === 'string' && POLICY_VALUES.has(raw.permission) ? (raw.permission as PermissionPolicy) : defaults.permission
+  }
+  if (typeof raw.draft === 'string' && raw.draft.trim()) tab.draft = raw.draft
+  return tab
+}
+
 function readTabs(workspace: string): PersistedTabs | null {
   try {
     const raw = localStorage.getItem(tabsKey(workspace))
     if (!raw) return null
     const parsed: unknown = JSON.parse(raw)
-    if (typeof parsed !== 'object' || parsed === null || !Array.isArray((parsed as PersistedTabs).tabs)) return null
-    const p = parsed as PersistedTabs
-    return {
-      tabs: p.tabs.filter((t) => t && typeof t.id === 'string' && typeof t.title === 'string'),
-      activeChatId: typeof p.activeChatId === 'string' ? p.activeChatId : null
+    if (!isRecord(parsed) || !Array.isArray(parsed.tabs)) return null
+    const a = useSettingsStore.getState().settings.agent
+    const defaults = { modeId: a.defaultModeId, model: a.defaultModel, effort: a.defaultEffort, permission: a.defaultPermission }
+    const seen = new Set<string>()
+    const tabs: PersistedTab[] = []
+    for (const entry of parsed.tabs) {
+      const tab = sanitizeTab(entry, defaults)
+      if (!tab || seen.has(tab.id)) continue
+      seen.add(tab.id)
+      tabs.push(tab)
+      if (tabs.length >= MAX_RESTORED_TABS) break
     }
+    return { tabs, activeChatId: typeof parsed.activeChatId === 'string' ? parsed.activeChatId : null }
   } catch {
     return null
   }
@@ -350,6 +390,11 @@ function schedulePersist(): void {
 
 /** In-flight `atom.agent.createChat` calls, so concurrent sends start a chat once. */
 const startPromises = new Map<string, Promise<void>>()
+/**
+ * Bumped when the user presses Stop while a chat's CLI is still starting: sends that were waiting for the
+ * start are not delivered (there is no turn yet for `interrupt` to stop).
+ */
+const stopEpochs = new Map<string, number>()
 
 /** Stop a chat's CLI session (after an in-flight start settles, so no orphan session is left behind). */
 function closeRemote(chatId: string): void {
@@ -461,6 +506,8 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
       const s = get()
       const chat = s.chats[id]
       if (!chat) return
+      // Sends still waiting for the CLI to start must not reach a session that is being closed.
+      if (startPromises.has(id)) stopEpochs.set(id, (stopEpochs.get(id) ?? 0) + 1)
       if (chat.started || startPromises.has(id)) closeRemote(id)
       const chats = { ...s.chats }
       delete chats[id]
@@ -554,6 +601,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
       const msgUuid = uuid()
       const busy = isRunning(chat) && (chat.started || startPromises.has(chatId))
       const now = Date.now()
+      const stopEpoch = stopEpochs.get(chatId) ?? 0
 
       update(chatId, (c) => {
         let n = addUserMessage(
@@ -590,6 +638,31 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
 
       try {
         await ensureStarted(chatId)
+        if ((stopEpochs.get(chatId) ?? 0) !== stopEpoch) {
+          // Stopped while the CLI was starting: take the prompt back into the composer instead of sending it.
+          update(chatId, (c) => {
+            let n: ChatState = { ...c, items: c.items.filter((i) => !(i.kind === 'user' && i.uuid === msgUuid)) }
+            if (fromComposer) {
+              const cur = n.composer
+              n = {
+                ...n,
+                composer: {
+                  text: cur.text.trim() ? `${body}\n\n${cur.text}` : body,
+                  attachments: [...attachments, ...cur.attachments.filter((a) => !attachments.some((b) => sameAttachment(a, b)))],
+                  images: [...images, ...cur.images.filter((i) => !images.some((j) => j.data === i.data))]
+                }
+              }
+            }
+            const settling = n.status === 'starting'
+            return {
+              ...n,
+              queuedCount: busy ? Math.max(0, n.queuedCount - 1) : n.queuedCount,
+              status: settling ? 'idle' : n.status,
+              turnStartedAt: settling ? null : n.turnStartedAt
+            }
+          })
+          return
+        }
         const message: OutgoingUserMessage = {
           uuid: msgUuid,
           text: body,
@@ -624,7 +697,14 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
 
     interrupt: async (chatId) => {
       const id = resolveId(chatId)
-      if (!id || !get().chats[id].started) return
+      if (!id) return
+      if (!get().chats[id].started) {
+        if (!startPromises.has(id)) return
+        // Nothing runs yet: cancel the sends waiting for the CLI and settle the optimistic "starting" state.
+        stopEpochs.set(id, (stopEpochs.get(id) ?? 0) + 1)
+        update(id, (c) => (c.status === 'starting' ? { ...c, status: 'idle', turnStartedAt: null } : c))
+        return
+      }
       try {
         await atom.agent.interrupt(id)
       } catch (err) {
@@ -683,11 +763,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
       try {
         await atom.agent.respondPermission(chatId, requestId, response)
       } catch (err) {
-        update(chatId, (c) =>
-          c.pendingRequests.some((r) => r.requestId === requestId)
-            ? c
-            : { ...c, pendingRequests: [...c.pendingRequests, request], status: 'awaiting-input' }
-        )
+        update(chatId, (c) => reopenPermissionRequest(c, request))
         toast.error('Could not send your answer', errorMessage(err))
       }
     },
@@ -966,15 +1042,22 @@ function switchWorkspace(path: string): void {
       chats[id] = { ...c, workspace: path }
       carried.push(id)
     } else if (c.started || startPromises.has(id)) {
+      if (startPromises.has(id)) stopEpochs.set(id, (stopEpochs.get(id) ?? 0) + 1)
       closeRemote(id)
     }
   }
 
   const saved = path ? readTabs(path) : null
+  let savedActive = saved?.activeChatId ?? null
   for (const tab of saved?.tabs ?? []) {
     if (chats[tab.id]) continue
-    chats[tab.id] = chatFromTab(tab, path)
-    order.push(tab.id)
+    // The chat may still be starting from before an earlier switch, with its close queued behind the start
+    // (closeRemote). Main keys sessions by chat id, so restore it under a fresh id that the pending close can
+    // never reach.
+    const restored = startPromises.has(tab.id) ? { ...tab, id: uuid() } : tab
+    if (savedActive === tab.id) savedActive = restored.id
+    chats[restored.id] = chatFromTab(restored, path)
+    order.push(restored.id)
   }
   order.push(...carried)
   if (!order.length) {
@@ -982,8 +1065,7 @@ function switchWorkspace(path: string): void {
     chats[fresh.id] = fresh
     order.push(fresh.id)
   }
-  const activeChatId =
-    carried[0] ?? (saved?.activeChatId && chats[saved.activeChatId] ? saved.activeChatId : order[order.length - 1])
+  const activeChatId = carried[0] ?? (savedActive && chats[savedActive] ? savedActive : order[order.length - 1])
 
   useAgentStore.setState({ chats, order, activeChatId, workspacePath: path })
   if (path) lastPersisted.set(tabsKey(path), JSON.stringify(snapshotTabs(useAgentStore.getState())))

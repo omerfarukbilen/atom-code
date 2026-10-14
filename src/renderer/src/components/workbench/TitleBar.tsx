@@ -8,6 +8,7 @@ import { useSettingsStore } from '../../stores/settings'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { AtomLogo, IconButton, Kbd, Menu, useMenu, type MenuEntry } from '../ui'
 import { AccountAvatar } from './AccountAvatar'
+import { togglePanel } from './commands'
 
 /**
  * 38 px custom title bar. The whole bar is a window drag region; interactive children opt out with
@@ -115,11 +116,10 @@ function LayoutToggles() {
         onClick={() => l().toggleSidebar()}
       />
       <IconButton
-        title={`${panelVisible ? 'Hide' : 'Show'} Panel (${formatKeybinding('mod+j')})`}
+        title={`${panelVisible && !agentMaximized ? 'Hide' : 'Show'} Panel (${formatKeybinding('mod+j')})`}
         icon={<PanelBottom size={15} />}
         active={panelVisible && !agentMaximized}
-        disabled={agentMaximized}
-        onClick={() => l().togglePanel()}
+        onClick={togglePanel}
       />
       <IconButton
         title={`${agentVisible ? 'Hide' : 'Show'} ATOM Agent (${formatKeybinding('mod+alt+b')})`}

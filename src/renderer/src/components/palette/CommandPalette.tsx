@@ -1,11 +1,11 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronRight, CornerDownLeft, FileSearch, FolderOpen, Hash, SquareChevronRight, TextCursorInput } from 'lucide-react'
 import { basename, relativePath } from '@shared/paths'
 import { cn } from '../../lib/cn'
 import { FileIcon } from '../../lib/file-icons'
 import { fuzzyFilter } from '../../lib/fuzzy'
-import { executeCommand, listCommands, type Command } from '../../stores/commands'
+import { listCommands, type Command } from '../../stores/commands'
 import { useEditorStore } from '../../stores/editor'
 import { useLayoutStore } from '../../stores/layout'
 import { useWorkspaceStore } from '../../stores/workspace'
@@ -75,6 +75,16 @@ const PLACEHOLDERS: Record<Mode, string> = {
   help: 'Choose what to do'
 }
 
+/**
+ * Element to give focus back to on Escape. Captured when the palette opens — switching the prefix while it
+ * is open (⌘P → ⌘⇧P) remounts the inner component, whose own `document.activeElement` would be the palette.
+ */
+let restoreTarget: HTMLElement | null = null
+const offPaletteOpen = useLayoutStore.subscribe((s, prev) => {
+  if (s.commandPaletteOpen && !prev.commandPaletteOpen) restoreTarget = document.activeElement as HTMLElement | null
+})
+if (import.meta.hot) import.meta.hot.dispose(offPaletteOpen)
+
 export function CommandPalette() {
   const open = useLayoutStore((s) => s.commandPaletteOpen)
   const prefix = useLayoutStore((s) => s.commandPalettePrefix)
@@ -92,15 +102,20 @@ function PaletteInner({ initial }: { initial: string }) {
   const [active, setActive] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
-  const restoreFocus = useRef<HTMLElement | null>(document.activeElement as HTMLElement | null)
   const mouseMoved = useRef(false)
   const close = useLayoutStore((s) => s.closeCommandPalette)
 
   const workspace = useWorkspaceStore((s) => s.workspace)
   const files = useWorkspaceStore((s) => s.files)
   const filesLoading = useWorkspaceStore((s) => s.filesLoading)
-  const mode = modeOf(value)
-  const query = mode === 'files' ? value : value.slice(1)
+  // Fuzzy-ranking tens of thousands of paths is not free: render the input first, the results when ready.
+  const deferredValue = useDeferredValue(value)
+  const mode = modeOf(deferredValue)
+  const query = mode === 'files' ? deferredValue : deferredValue.slice(1)
+  /** Mode of what is typed right now (chip, placeholder) — `mode` follows the rendered results. */
+  const liveMode = modeOf(value)
+  /** Enter pressed before the results caught up with the input: run the top result once they do. */
+  const pendingEnter = useRef(false)
 
   useEffect(() => {
     inputRef.current?.focus()
@@ -113,7 +128,9 @@ function PaletteInner({ initial }: { initial: string }) {
 
   const dismiss = (restore: boolean): void => {
     close()
-    if (restore) requestAnimationFrame(() => restoreFocus.current?.focus?.())
+    const target = restoreTarget
+    restoreTarget = null
+    if (restore && target?.isConnected) requestAnimationFrame(() => target.focus())
   }
 
   const items: PaletteItem[] = useMemo(() => {
@@ -146,7 +163,12 @@ function PaletteInner({ initial }: { initial: string }) {
           keybinding: c.keybinding,
           run: () => {
             pushRecent(RECENT_COMMANDS_KEY, c.id, 12)
-            void executeCommand(c.id)
+            // Run directly: the entry was listed because its `when` held while the palette was open.
+            // Going through executeCommand would re-check it after the palette closed, and conditions
+            // such as "the editor is focused / the palette is open" no longer hold at that point.
+            void Promise.resolve()
+              .then(() => c.run())
+              .catch((err: unknown) => console.error(`[command] ${c.id} failed`, err))
           }
         }
       }
@@ -249,6 +271,12 @@ function PaletteInner({ initial }: { initial: string }) {
   // Reset selection when results change.
   useEffect(() => setActive(0), [mode, query])
 
+  useEffect(() => {
+    if (!pendingEnter.current || value !== deferredValue) return
+    pendingEnter.current = false
+    runItem(items[0])
+  })
+
   // Keep the active row visible.
   useLayoutEffect(() => {
     const el = listRef.current?.querySelector<HTMLElement>(`[data-index="${active}"]`)
@@ -261,9 +289,15 @@ function PaletteInner({ initial }: { initial: string }) {
       item.run()
       return
     }
-    dismiss(false)
-    // Let the overlay unmount before the action moves focus.
-    setTimeout(() => item.run(), 0)
+    const target = restoreTarget
+    restoreTarget = null
+    close()
+    // Like VS Code: give focus back to where the user was (commands act on the focused editor), then run
+    // once the overlay is gone. Actions that move focus themselves (opening a file) still win.
+    requestAnimationFrame(() => {
+      if (target?.isConnected && document.activeElement !== target) target.focus()
+      item.run()
+    })
   }
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>): void => {
@@ -285,7 +319,8 @@ function PaletteInner({ initial }: { initial: string }) {
     } else if (e.key === 'Enter') {
       e.preventDefault()
       e.stopPropagation()
-      runItem(items[active])
+      if (value !== deferredValue) pendingEnter.current = true
+      else runItem(items[active])
     } else if (e.key === 'Escape') {
       e.preventDefault()
       e.stopPropagation()
@@ -300,13 +335,13 @@ function PaletteInner({ initial }: { initial: string }) {
     <div className="fixed inset-0 z-[150] flex justify-center px-4 pt-[12vh]" onMouseDown={(e) => e.target === e.currentTarget && dismiss(true)}>
       <div role="dialog" aria-label="Command palette" className="flex max-h-[min(560px,72vh)] w-full max-w-[620px] flex-col overflow-hidden rounded-xl border border-line-strong bg-overlay shadow-pop animate-fade-in">
         <div className="flex h-11 shrink-0 items-center gap-2 border-b border-line px-3">
-          <ModeChip mode={mode} />
+          <ModeChip mode={liveMode} />
           <input
             ref={inputRef}
             value={value}
             spellCheck={false}
             autoComplete="off"
-            placeholder={PLACEHOLDERS[mode]}
+            placeholder={PLACEHOLDERS[liveMode]}
             onChange={(e) => setValue(e.target.value)}
             onKeyDown={onKeyDown}
             onBlur={(e) => {
@@ -367,13 +402,13 @@ function PaletteInner({ initial }: { initial: string }) {
             <kbd className="kbd">↓</kbd> navigate
           </span>
           <span className="flex items-center gap-1">
-            <kbd className="kbd">↵</kbd> {mode === 'files' ? 'open' : 'run'}
+            <kbd className="kbd">↵</kbd> {liveMode === 'files' ? 'open' : 'run'}
           </span>
           <span className="flex items-center gap-1">
             <kbd className="kbd">esc</kbd> close
           </span>
           <span className="ml-auto">
-            {mode === 'files' ? (
+            {liveMode === 'files' ? (
               <>
                 <span className="text-muted">&gt;</span> commands · <span className="text-muted">:</span> line · <span className="text-muted">?</span> help
               </>

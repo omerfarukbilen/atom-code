@@ -27,6 +27,9 @@ app.setName('ATOM Code')
 process.env.CLAUDE_AGENT_SDK_CLIENT_APP = `atom-code/${app.getVersion()}`
 
 let allowClose = false
+let closeAckTimer: ReturnType<typeof setTimeout> | undefined
+/** True between a close request and the renderer's answer. */
+let closeRequested = false
 
 function createWindow(): BrowserWindow {
   const settings = settingsService.get()
@@ -73,14 +76,22 @@ function createWindow(): BrowserWindow {
   win.on('close', (e) => {
     if (allowClose || win.webContents.isDestroyed()) return
     e.preventDefault()
+    closeRequested = true
     ctx.send(IPC.appBeforeCloseEvent)
-    // Never trap the user: close anyway if the renderer does not answer.
-    setTimeout(() => {
+    // Never trap the user: close anyway if the renderer does not acknowledge the request quickly
+    // (crashed, hung or still booting). Once acknowledged, the renderer's dialog decides.
+    clearTimeout(closeAckTimer)
+    closeAckTimer = setTimeout(() => {
       if (!allowClose && !win.isDestroyed()) {
         allowClose = true
         win.close()
       }
-    }, 4000)
+    }, 2500)
+  })
+  win.on('unresponsive', () => {
+    if (!closeRequested) return
+    allowClose = true
+    win.destroy()
   })
   // A reloaded or closed renderer has no record of its chats, terminals or IDE requests: release them
   // so CLIs, shells and permission prompts are never orphaned (macOS keeps the app alive on close).
@@ -179,7 +190,14 @@ if (!gotLock) {
     registerAiIpc()
     registerIdeBridgeIpc()
 
+    ipcMain.handle(IPC.appCloseAck, () => {
+      clearTimeout(closeAckTimer)
+      closeAckTimer = undefined
+    })
     ipcMain.handle(IPC.appConfirmClose, (_e, allow: boolean) => {
+      clearTimeout(closeAckTimer)
+      closeAckTimer = undefined
+      closeRequested = false
       if (!allow) return
       allowClose = true
       ctx.getWindow()?.close()

@@ -9,6 +9,7 @@ import {
   isRunning,
   parsePartialJson,
   reduceAgentEvent,
+  reopenPermissionRequest,
   titleFromPrompt,
   todoProgress,
   transcriptFromStoredMessages
@@ -799,4 +800,107 @@ test('titleFromPrompt trims to 40 chars and strips IDE context', () => {
   assert.equal(long.length, 40)
   assert.ok(long.endsWith('…'))
   assert.equal(titleFromPrompt('<atom_context>x</atom_context>   '), 'New chat')
+})
+
+const RESULT_OK = {
+  type: 'result',
+  subtype: 'success',
+  is_error: false,
+  duration_ms: 10,
+  duration_api_ms: 5,
+  num_turns: 1,
+  result: 'ok',
+  stop_reason: 'end_turn',
+  total_cost_usd: 0.01,
+  usage: {},
+  permission_denials: [],
+  queued_turn_count: 0
+}
+
+test('turn end settles tools that never got a result; background subagents keep running', () => {
+  let chat = run(newChat(), [
+    { type: 'status', status: 'running' },
+    assistantFrame('m1', { type: 'tool_use', id: 'lost', name: 'Bash', input: { command: 'ls' } }),
+    assistantFrame('m1', { type: 'tool_use', id: 'bg', name: 'Agent', input: { description: 'Bg', prompt: 'p' } }),
+    toolResult('bg', 'Async agent launched', { structured: { status: 'async_launched', agentId: 'ag1' } }),
+    assistantFrame('m_bg', { type: 'tool_use', id: 'bg_read', name: 'Read', input: { file_path: '/a' } }, 'bg'),
+    sdk(RESULT_OK)
+  ])
+  assert.equal(findToolCall(chat, 'lost')?.status, 'interrupted', 'a successful turn end does not leave a spinner')
+  assert.equal(findToolCall(chat, 'bg')?.subagent?.status, 'running')
+  assert.equal(findToolCall(chat, 'bg_read')?.status, 'running', 'background subagent steps are still live')
+
+  // the background task finishes: its leftover steps stop spinning
+  chat = run(chat, [sdk({ type: 'system', subtype: 'task_notification', task_id: 'ag1', tool_use_id: 'bg', status: 'completed', summary: 'done' })])
+  assert.equal(findToolCall(chat, 'bg_read')?.status, 'interrupted')
+  assert.equal(findToolCall(chat, 'bg')?.subagent?.status, 'completed')
+
+  // main reports idle without a result (e.g. after an interrupt): stale tools settle too
+  chat = run(chat, [
+    { type: 'status', status: 'running' },
+    assistantFrame('m2', { type: 'tool_use', id: 'stale', name: 'Grep', input: { pattern: 'x' } }),
+    { type: 'status', status: 'idle' }
+  ])
+  assert.equal(findToolCall(chat, 'stale')?.status, 'interrupted')
+})
+
+test('foreground Agent report settles its nested steps', () => {
+  const chat = run(newChat(), [
+    assistantFrame('m', { type: 'tool_use', id: 'fg', name: 'Agent', input: { description: 'Fg', prompt: 'p' } }),
+    assistantFrame('m_sub', { type: 'tool_use', id: 'sub_bash', name: 'Bash', input: { command: 'x' } }, 'fg'),
+    toolResult('fg', [{ type: 'text', text: 'Report' }], { structured: { status: 'completed', content: [] } })
+  ])
+  assert.equal(findToolCall(chat, 'fg')?.status, 'success')
+  assert.equal(findToolCall(chat, 'sub_bash')?.status, 'interrupted')
+})
+
+test('api_retry drops text streamed by the failed attempt (no duplicated text after the retry)', () => {
+  let chat = run(newChat(), [
+    { type: 'status', status: 'running' },
+    // an earlier, confirmed message stays untouched
+    assistantFrame('m0', { type: 'text', text: 'Looking.' }),
+    stream({ type: 'message_start', message: { id: 'msg_fail', model: 'claude-test' } }),
+    stream({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+    stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Partial ans' } }),
+    sdk({ type: 'system', subtype: 'api_retry', attempt: 1, max_retries: 10, retry_delay_ms: 1000, error_status: 529, error: 'overloaded' })
+  ])
+  assert.equal(assistantItems(chat).some((i) => i.id === 'msg_fail'), false, 'the failed attempt is removed')
+  assert.equal(chat.streams[''], undefined)
+  chat = run(chat, [
+    stream({ type: 'message_start', message: { id: 'msg_ok', model: 'claude-test' } }),
+    stream({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+    stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Partial answer, complete.' } }),
+    stream({ type: 'content_block_stop', index: 0 }),
+    assistantFrame('msg_ok', { type: 'text', text: 'Partial answer, complete.' })
+  ])
+  const texts = assistantItems(chat).flatMap((i) => i.blocks.filter((b) => b.kind === 'text').map((b) => (b.kind === 'text' ? b.text : '')))
+  assert.deepEqual(texts, ['Looking.', 'Partial answer, complete.'])
+  assert.equal(chat.items.filter((i) => i.kind === 'notice' && i.variant === 'retry').length, 0)
+})
+
+test('reopenPermissionRequest restores a prompt whose answer could not be delivered', () => {
+  const req: PermissionRequest = {
+    requestId: 'r1',
+    chatId: 'c1',
+    kind: 'tool',
+    toolName: 'Bash',
+    toolUseId: 'b1',
+    input: { command: 'rm -rf build' },
+    createdAt: NOW
+  }
+  const asked = run(newChat(), [
+    { type: 'status', status: 'running' },
+    assistantFrame('m', { type: 'tool_use', id: 'b1', name: 'Bash', input: { command: 'rm -rf build' } }),
+    { type: 'permission-request', request: req }
+  ])
+  const denied = reduceAgentEvent(asked, { type: 'permission-resolved', requestId: 'r1', behavior: 'deny' }, NOW + 50)
+  assert.equal(denied.pendingRequests.length, 0)
+  assert.equal(findToolCall(denied, 'b1')?.status, 'denied')
+  const reopened = reopenPermissionRequest(denied, req)
+  assert.equal(reopened.pendingRequests.length, 1)
+  assert.equal(reopened.status, 'awaiting-input')
+  assert.equal(findToolCall(reopened, 'b1')?.status, 'running')
+  assert.equal(reopenPermissionRequest(reopened, req), reopened, 'idempotent')
+  const ended = reduceAgentEvent(denied, { type: 'status', status: 'closed' }, NOW + 60)
+  assert.equal(reopenPermissionRequest(ended, req), ended, 'not reopened once the session ended')
 })

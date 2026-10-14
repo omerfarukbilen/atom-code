@@ -495,6 +495,42 @@ function interruptRunning(chat: ChatState, now: number, includeBackground: boole
   })
 }
 
+/** A subagent that finished (or the Agent tool that returned its report) has no live steps left. */
+function settleSubagentChildren(t: ToolCall, now: number): ToolCall {
+  if (!t.children.length) return t
+  const children = interruptBlocks(t.children, now, true)
+  return children === t.children ? t : { ...t, children }
+}
+
+const TERMINAL_SUBAGENT_STATUSES = new Set<SubagentInfo['status']>(['completed', 'failed', 'stopped'])
+
+/**
+ * An API retry restarts the request: blocks streamed for the failed attempt that no complete `assistant`
+ * frame confirmed would otherwise stay next to the retried copy (duplicated text). Drop them.
+ */
+function dropUnconfirmedStream(chat: ChatState): ChatState {
+  const cursor = chat.streams['']
+  if (!cursor) return chat
+  const streams = { ...chat.streams }
+  delete streams['']
+  const next: ChatState = { ...chat, streams }
+  const idx = next.items.findIndex((it) => it.kind === 'assistant' && it.id === cursor.messageId)
+  if (idx === -1) return next
+  const item = next.items[idx] as AssistantItem
+  const streamed = new Set(Object.values(cursor.blocks))
+  const awaiting = new Set(next.pendingRequests.map((r) => r.toolUseId).filter((id): id is string => !!id))
+  const blocks = item.blocks.filter((b) => {
+    if (!streamed.has(b.id)) return true
+    if (b.kind === 'tool') return !!b.uuid || b.result !== undefined || awaiting.has(b.id)
+    return !!b.final
+  })
+  if (blocks.length === item.blocks.length && blocks.length > 0) return next
+  const items = next.items.slice()
+  if (blocks.length) items[idx] = { ...item, blocks }
+  else items.splice(idx, 1)
+  return { ...next, items }
+}
+
 /** Stop streaming on main-thread blocks only (end of a turn). */
 function finalizeRootStreaming(chat: ChatState, now: number): ChatState {
   const next = mapItems(chat, (it) => {
@@ -1185,7 +1221,10 @@ function applyToolResult(chat: ChatState, tr: Obj, structured: unknown, ctx: Ctx
       structured: structured !== undefined ? structured : tool.structured,
       endedAt: tool.endedAt ?? ctx.now
     }
-    return withSubagentFromResult(tool)
+    tool = withSubagentFromResult(tool)
+    // A foreground subagent's report ends its run: steps still marked running lost their results.
+    const backgroundRunning = !!tool.subagent?.backgrounded && tool.subagent.status === 'running'
+    return backgroundRunning ? tool : settleSubagentChildren(tool, ctx.now)
   })
   if (next === chat) return chat
   const tool = findToolCall(next.items, id)
@@ -1370,8 +1409,9 @@ function reduceResult(chat: ChatState, msg: Obj, ctx: Ctx): ChatState {
   // The error usually already shows as the synthetic assistant text ("API Error: …"): don't repeat it.
   if (errorText && textVisibleInTurn(chat, errorText)) errorText = undefined
 
-  let next = chat
-  if (interrupted || isError) next = interruptRunning(next, ctx.now, false)
+  // The result is the turn-complete signal: every tool of the turn has its tool_result by now, so anything
+  // still spinning (lost result, interrupt, error) is stale. Background subagents keep running.
+  let next = interruptRunning(chat, ctx.now, false)
   next = finalizeRootStreaming(next, ctx.now)
 
   const [id, withSeq] = nextId(next, 'result')
@@ -1467,7 +1507,7 @@ function subagentStatus(v: unknown): SubagentInfo['status'] | undefined {
 }
 
 /** Merge task info into the tool call that started the task (by tool_use_id, else by known task id). */
-function patchTask(chat: ChatState, msg: Obj, patch: (prev: SubagentInfo) => SubagentInfo): ChatState {
+function patchTask(chat: ChatState, msg: Obj, now: number, patch: (prev: SubagentInfo) => SubagentInfo): ChatState {
   const taskId = str(msg.task_id)
   const toolUseId = str(msg.tool_use_id)
   let tool = toolUseId ? findToolCall(chat.items, toolUseId) : undefined
@@ -1475,7 +1515,10 @@ function patchTask(chat: ChatState, msg: Obj, patch: (prev: SubagentInfo) => Sub
   if (!tool) return chat
   return updateTool(chat, tool.id, (t) => {
     const prev: SubagentInfo = { ...t.subagent, taskId: t.subagent?.taskId ?? taskId }
-    return { ...t, subagent: pruneUndefined(patch(prev)) ?? prev }
+    const subagent = pruneUndefined(patch(prev)) ?? prev
+    const next: ToolCall = { ...t, subagent }
+    // A finished task has no live steps left (their spinners would otherwise never stop).
+    return TERMINAL_SUBAGENT_STATUSES.has(subagent.status) ? settleSubagentChildren(next, now) : next
   })
 }
 
@@ -1530,7 +1573,7 @@ function reduceSystemMessage(chat: ChatState, msg: Obj, ctx: Ctx): ChatState {
       const reason = str(msg.error) ?? 'error'
       const label = status ? `${reason} (${status})` : reason
       return upsertTrailingNotice(
-        chat,
+        dropUnconfirmedStream(chat),
         {
           variant: 'retry',
           text: `API ${label.replace(/_/g, ' ')} — retrying in ${Math.max(1, Math.round(delay / 1000))}s (attempt ${attempt}${maxRetries ? `/${maxRetries}` : ''})`,
@@ -1576,7 +1619,7 @@ function reduceSystemMessage(chat: ChatState, msg: Obj, ctx: Ctx): ChatState {
     }
 
     case 'task_started':
-      return patchTask(chat, msg, (prev) =>
+      return patchTask(chat, msg, ctx.now, (prev) =>
         withDefined(prev, {
           description: str(msg.description),
           subagentType: str(msg.subagent_type),
@@ -1586,7 +1629,7 @@ function reduceSystemMessage(chat: ChatState, msg: Obj, ctx: Ctx): ChatState {
       )
 
     case 'task_progress':
-      return patchTask(chat, msg, (prev) =>
+      return patchTask(chat, msg, ctx.now, (prev) =>
         withDefined(prev, {
           description: str(msg.description),
           subagentType: str(msg.subagent_type),
@@ -1598,7 +1641,7 @@ function reduceSystemMessage(chat: ChatState, msg: Obj, ctx: Ctx): ChatState {
       )
 
     case 'task_notification':
-      return patchTask(chat, msg, (prev) =>
+      return patchTask(chat, msg, ctx.now, (prev) =>
         withDefined(prev, {
           status: subagentStatus(msg.status),
           summary: str(msg.summary),
@@ -1608,7 +1651,7 @@ function reduceSystemMessage(chat: ChatState, msg: Obj, ctx: Ctx): ChatState {
 
     case 'task_updated': {
       const p = isObj(msg.patch) ? msg.patch : {}
-      return patchTask(chat, msg, (prev) =>
+      return patchTask(chat, msg, ctx.now, (prev) =>
         withDefined(prev, {
           status: subagentStatus(p.status),
           description: str(p.description),
@@ -1749,7 +1792,11 @@ function setStatus(chat: ChatState, status: AgentRunStatus, now: number): ChatSt
   }
   if (status === chat.status) return chat
   if (status === 'running' || status === 'starting') return { ...chat, status, turnStartedAt: chat.turnStartedAt ?? now }
-  if (status === 'idle') return { ...finalizeRootStreaming(chat, now), status, turnStartedAt: null, compacting: false }
+  if (status === 'idle') {
+    // Main reports idle only when no turn is running or queued: unanswered tools are stale.
+    const settled = chat.pendingRequests.length ? chat : interruptRunning(chat, now, false)
+    return { ...finalizeRootStreaming(settled, now), status, turnStartedAt: null, compacting: false }
+  }
   return { ...chat, status }
 }
 
@@ -1786,6 +1833,20 @@ function resolvePermission(chat: ChatState, requestId: string, behavior: 'allow'
     next = updateTool(next, req.toolUseId, (t) => ({ ...t, status: 'denied', endedAt: t.endedAt ?? now }))
   }
   if (!next.pendingRequests.length && next.status === 'awaiting-input') next = { ...next, status: 'running' }
+  return next
+}
+
+/**
+ * Undo an optimistic `permission-resolved` after the answer could not be delivered: show the prompt again and
+ * revert the "denied" mark on its tool. No-op once the turn is over (the CLI has settled the request itself).
+ */
+export function reopenPermissionRequest(chat: ChatState, request: PermissionRequest): ChatState {
+  if (chat.pendingRequests.some((r) => r.requestId === request.requestId)) return chat
+  if (chat.status !== 'running' && chat.status !== 'awaiting-input') return chat
+  let next: ChatState = { ...chat, pendingRequests: [...chat.pendingRequests, request], status: 'awaiting-input' }
+  if (request.toolUseId) {
+    next = updateTool(next, request.toolUseId, (t) => (t.status === 'denied' && !t.result ? { ...t, status: 'running', endedAt: undefined } : t))
+  }
   return next
 }
 

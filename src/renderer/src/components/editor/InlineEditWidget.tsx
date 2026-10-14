@@ -3,6 +3,7 @@ import { Check, CornerDownLeft, Pencil, RotateCcw, Sparkles, Square, X } from 'l
 import { dirname } from '@shared/paths'
 import { atom } from '../../lib/api'
 import { cn } from '../../lib/cn'
+import { formatKeybinding } from '../../lib/platform'
 import { uuid } from '../../lib/ids'
 import { monaco } from '../../lib/monaco'
 import { useSettingsStore } from '../../stores/settings'
@@ -517,7 +518,7 @@ export function InlineEditWidget({ session }: { session: InlineEditSession }) {
             </span>
             <button
               type="button"
-              title="Accept (Tab / mod+Enter)"
+              title={`Accept (Tab / ${formatKeybinding('mod+enter')})`}
               onClick={() => session.accept()}
               className="inline-flex h-6 items-center gap-1.5 rounded-md bg-success px-2 text-[11.5px] font-medium text-app hover:opacity-90"
             >

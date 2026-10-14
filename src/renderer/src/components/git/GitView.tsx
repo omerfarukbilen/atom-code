@@ -384,10 +384,21 @@ function ChangeGroup({ id, title, count, actions, children }: { id: string; titl
   }, [id, collapsed])
   return (
     <div className="mb-1">
-      <div className="group flex h-[22px] items-center gap-1 pl-1.5 pr-3 hover:bg-hover" onClick={() => setCollapsed(!collapsed)}>
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={!collapsed}
+        className="group flex h-[22px] items-center gap-1 pl-1.5 pr-3 outline-none hover:bg-hover focus-visible:bg-active"
+        onClick={() => setCollapsed(!collapsed)}
+        onKeyDown={(e) => {
+          if (e.target !== e.currentTarget || (e.key !== 'Enter' && e.key !== ' ')) return
+          e.preventDefault()
+          setCollapsed(!collapsed)
+        }}
+      >
         <ChevronRight size={14} className={cn('shrink-0 text-subtle transition-transform duration-100', !collapsed && 'rotate-90')} />
         <span className="flex-1 truncate text-[11px] font-semibold uppercase tracking-[0.06em] text-muted">{title}</span>
-        <span className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100" onClick={(e) => e.stopPropagation()}>
+        <span className="flex items-center gap-0.5 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100" onClick={(e) => e.stopPropagation()}>
           {actions}
         </span>
         <span className="ml-1 rounded-full bg-active px-1.5 text-[10.5px] font-medium leading-4 text-muted">{count}</span>
@@ -405,15 +416,26 @@ const ChangeRow = memo(function ChangeRow({ change, staged }: { change: GitFileC
   return (
     <div
       role="button"
-      tabIndex={-1}
+      tabIndex={0}
       title={`${change.relativePath} • ${deco.label}${staged ? ' (staged)' : ''}`}
       onClick={() => void openChangeDiff(change)}
-      className="group flex h-[22px] cursor-pointer items-center gap-1.5 pl-6 pr-3 text-[13px] hover:bg-hover"
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          void openChangeDiff(change)
+        } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault()
+          const sibling = e.key === 'ArrowDown' ? e.currentTarget.nextElementSibling : e.currentTarget.previousElementSibling
+          if (sibling instanceof HTMLElement) sibling.focus()
+        }
+      }}
+      className="group flex h-[22px] cursor-pointer items-center gap-1.5 pl-6 pr-3 text-[13px] outline-none hover:bg-hover focus-visible:bg-active"
     >
       <FileIcon name={name} size={15} />
       <span className={cn('shrink-0 truncate', deleted ? 'text-muted line-through' : 'text-fg')}>{name}</span>
       <span className="min-w-0 flex-1 truncate text-[11.5px] text-subtle">{dir}</span>
-      <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex" onClick={(e) => e.stopPropagation()}>
+      <span className="hidden shrink-0 items-center gap-0.5 group-focus-within:flex group-hover:flex" onClick={(e) => e.stopPropagation()}>
         {!deleted && <IconButton size="xs" title="Open File" icon={<FileText size={13} />} onClick={() => void openChangeFile(change)} />}
         {staged ? (
           <IconButton size="xs" title="Unstage Changes" icon={<Minus size={13} />} onClick={() => void useGitStore.getState().unstage([change.path])} />
@@ -471,7 +493,18 @@ function CommitHistory() {
 
   return (
     <div className="mt-1 border-t border-line pt-1">
-      <div className="flex h-[22px] cursor-pointer items-center gap-1 pl-1.5 pr-3 hover:bg-hover" onClick={() => setOpen(!open)}>
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={open}
+        className="flex h-[22px] cursor-pointer items-center gap-1 pl-1.5 pr-3 outline-none hover:bg-hover focus-visible:bg-active"
+        onClick={() => setOpen(!open)}
+        onKeyDown={(e) => {
+          if (e.key !== 'Enter' && e.key !== ' ') return
+          e.preventDefault()
+          setOpen(!open)
+        }}
+      >
         <ChevronRight size={14} className={cn('shrink-0 text-subtle transition-transform duration-100', open && 'rotate-90')} />
         <span className="flex-1 truncate text-[11px] font-semibold uppercase tracking-[0.06em] text-muted">Commits</span>
       </div>
@@ -483,7 +516,7 @@ function CommitHistory() {
         ) : commits.length === 0 ? (
           <div className="px-6 py-1.5 text-[12px] text-subtle">No commits yet.</div>
         ) : (
-          commits.map((c) => (
+          commits.map((c, i) => (
             <div
               key={c.hash}
               role="button"
@@ -497,7 +530,7 @@ function CommitHistory() {
               }
               className="group flex h-[22px] cursor-pointer items-center gap-1.5 pl-6 pr-3 text-[12.5px] hover:bg-hover"
             >
-              <GitCommitHorizontal size={13} className="shrink-0 text-subtle group-first:text-accent" />
+              <GitCommitHorizontal size={13} className={cn('shrink-0', i === 0 ? 'text-accent' : 'text-subtle')} />
               <span className="min-w-0 flex-1 truncate text-fg">{c.message.split('\n')[0]}</span>
               <span className="shrink-0 text-[11px] text-subtle">{relativeTime(c.date)}</span>
             </div>

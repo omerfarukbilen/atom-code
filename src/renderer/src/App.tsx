@@ -6,9 +6,12 @@ import { LoginDialog } from './components/auth/LoginDialog'
 import { CommandPalette } from './components/palette/CommandPalette'
 import { SettingsView } from './components/settings/SettingsView'
 import { AtomLogo, Button, ConfirmHost, Modal, Toaster } from './components/ui'
+import { registerEditorCommands } from './components/editor/commands'
+import { installTerminalKeyHandling } from './components/panel/terminalKeys'
 import { AboutDialog } from './components/workbench/AboutDialog'
 import { registerWorkbenchCommands } from './components/workbench/commands'
 import { Workbench } from './components/workbench/Workbench'
+import { registerAgentCommands } from './lib/agent-commands'
 import { atom } from './lib/api'
 import { installIdeBridge } from './lib/ide-bridge'
 import { executeCommand, installKeybindings } from './stores/commands'
@@ -40,8 +43,13 @@ export default function App() {
   useEffect(() => {
     if (!loaded) return
     const disposers = [
+      // Must be installed before the global dispatcher: it lets Ctrl+L reach the shell and turns ⌘L on a
+      // terminal selection into an agent attachment.
+      installTerminalKeyHandling(),
       installKeybindings(),
       registerWorkbenchCommands(),
+      registerEditorCommands(),
+      registerAgentCommands(),
       // Lets the agent's atom-ide tools read open editors, selection, diagnostics and the terminal.
       installIdeBridge(),
       atom.app.onMenuCommand((command: MenuCommand) => {
@@ -127,8 +135,10 @@ function CloseGuard() {
   useEffect(
     () =>
       atom.app.onBeforeClose(() => {
-        if (useEditorStore.getState().hasDirtyTabs()) setOpen(true)
-        else void atom.app.confirmClose(true)
+        if (useEditorStore.getState().hasDirtyTabs()) {
+          void atom.app.ackClose()
+          setOpen(true)
+        } else void atom.app.confirmClose(true)
       }),
     []
   )

@@ -1,71 +1,15 @@
-import { useCallback, useEffect, useRef, type ReactNode, type RefObject } from 'react'
+import type { ReactNode } from 'react'
 import { Eraser, Maximize2, Minimize2, Plus, SquareTerminal, Trash2, X } from 'lucide-react'
 import { cn } from '../../lib/cn'
-import { isMac } from '../../lib/platform'
+import { formatKeybinding, isMac } from '../../lib/platform'
 import { useEditorStore } from '../../stores/editor'
 import { useLayoutStore, type PanelTab } from '../../stores/layout'
 import { useOutputStore } from '../../stores/output'
-import { registerPanelMaximizeHandler, usePanelUiStore, useTerminalStore } from '../../stores/terminal'
+import { usePanelUiStore, useTerminalStore } from '../../stores/terminal'
 import { IconButton } from '../ui'
 import { OutputPanel } from './OutputPanel'
 import { ProblemsPanel } from './ProblemsPanel'
 import { TerminalPanel, terminalLabels } from './TerminalPanel'
-
-/**
- * Maximize/restore drives the resizable-panels separator above this panel through its keyboard API
- * (Home = shrink the editor to its minimum), so it works without access to the workbench's panel refs.
- */
-function useMaximize(rootRef: RefObject<HTMLDivElement | null>): () => void {
-  const restoreFraction = useRef<number | null>(null)
-
-  const elements = useCallback(() => {
-    const panel = rootRef.current?.closest<HTMLElement>('[data-panel]') ?? null
-    const separator = panel?.previousElementSibling as HTMLElement | null
-    const editor = separator?.previousElementSibling as HTMLElement | null
-    const group = panel?.parentElement ?? null
-    if (!panel || !group || !separator?.hasAttribute('data-separator') || !editor?.hasAttribute('data-panel')) return null
-    return { panel, separator, editor, group }
-  }, [rootRef])
-
-  // Reflect the measured state (also when the user drags the separator).
-  useEffect(() => {
-    const els = elements()
-    if (!els) return
-    const update = (): void => {
-      const editorH = els.editor.getBoundingClientRect().height
-      const panelH = els.panel.getBoundingClientRect().height
-      usePanelUiStore.getState().setMaximized(panelH > 160 && editorH <= 160)
-    }
-    const ro = new ResizeObserver(update)
-    ro.observe(els.editor)
-    ro.observe(els.panel)
-    update()
-    return () => ro.disconnect()
-  }, [elements])
-
-  return useCallback(() => {
-    const els = elements()
-    if (!els) {
-      window.dispatchEvent(new CustomEvent('atom:panel-maximize', { detail: { maximized: !usePanelUiStore.getState().maximized } }))
-      return
-    }
-    const press = (key: string): void => {
-      els.separator.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
-    }
-    const groupH = els.group.getBoundingClientRect().height || 1
-    const panelH = els.panel.getBoundingClientRect().height
-    if (usePanelUiStore.getState().maximized) {
-      const target = restoreFraction.current ?? 0.32
-      const steps = Math.round(((panelH / groupH - target) * 100) / 5)
-      for (let i = 0; i < Math.abs(steps); i++) press(steps > 0 ? 'ArrowDown' : 'ArrowUp')
-      restoreFraction.current = null
-    } else {
-      if (!useLayoutStore.getState().panelVisible) useLayoutStore.getState().setPanelVisible(true)
-      restoreFraction.current = panelH > 40 ? panelH / groupH : 0.32
-      press('Home')
-    }
-  }, [elements])
-}
 
 function PanelTabButton({ id, label, active, children }: { id: PanelTab; label: string; active: boolean; children?: ReactNode }) {
   return (
@@ -90,21 +34,19 @@ function PanelTabButton({ id, label, active, children }: { id: PanelTab; label: 
 export function BottomPanel() {
   const tab = useLayoutStore((s) => s.panelTab)
   const counts = useEditorStore((s) => s.diagnosticCounts)
-  const unread = useOutputStore((s) => s.unread)
+  // Boolean selector: the unread count changes on every flushed batch of agent output.
+  const hasUnread = useOutputStore((s) => s.unread > 0)
   const instances = useTerminalStore((s) => s.instances)
   const activeTerminal = useTerminalStore((s) => s.activeId)
   const maximized = usePanelUiStore((s) => s.maximized)
-  const rootRef = useRef<HTMLDivElement>(null)
-  const toggleMaximize = useMaximize(rootRef)
-
-  useEffect(() => registerPanelMaximizeHandler(toggleMaximize), [toggleMaximize])
+  const toggleMaximize = (): void => usePanelUiStore.getState().toggleMaximized()
 
   const problems = counts.errors + counts.warnings
   const labels = terminalLabels(instances)
   const single = instances.length === 1 ? instances[0] : null
 
   return (
-    <div ref={rootRef} className="flex h-full min-h-0 flex-col bg-panel">
+    <div className="flex h-full min-h-0 flex-col bg-panel">
       <div className="flex h-[35px] shrink-0 items-center gap-1 border-b border-line pl-2 pr-1.5" role="tablist">
         <PanelTabButton id="terminal" label="Terminal" active={tab === 'terminal'} />
         <PanelTabButton id="problems" label="Problems" active={tab === 'problems'}>
@@ -120,7 +62,7 @@ export function BottomPanel() {
           )}
         </PanelTabButton>
         <PanelTabButton id="output" label="Output" active={tab === 'output'}>
-          {unread > 0 && tab !== 'output' && <span className="h-1.5 w-1.5 rounded-full bg-accent" title={`${unread} new lines`} />}
+          {hasUnread && tab !== 'output' && <span className="h-1.5 w-1.5 rounded-full bg-accent" title="New output" />}
         </PanelTabButton>
 
         <div className="ml-auto flex items-center gap-0.5">
@@ -132,7 +74,7 @@ export function BottomPanel() {
                 </span>
               )}
               <IconButton
-                title={`New Terminal (${isMac ? '⌃⇧`' : 'Ctrl+Shift+`'})`}
+                title={`New Terminal (${formatKeybinding(isMac ? 'ctrl+shift+`' : 'mod+shift+`')})`}
                 icon={<Plus size={15} />}
                 onClick={() => void useTerminalStore.getState().create({ focus: true })}
               />
@@ -148,7 +90,7 @@ export function BottomPanel() {
           {tab === 'output' && <IconButton title="Clear Output" icon={<Eraser size={14} />} onClick={() => useOutputStore.getState().clear()} />}
           <div className="mx-1 h-4 w-px bg-line" />
           <IconButton title={maximized ? 'Restore Panel Size' : 'Maximize Panel'} icon={maximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />} onClick={toggleMaximize} />
-          <IconButton title="Close Panel" icon={<X size={15} />} onClick={() => useLayoutStore.getState().setPanelVisible(false)} />
+          <IconButton title={`Close Panel (${formatKeybinding('mod+j')})`} icon={<X size={15} />} onClick={() => useLayoutStore.getState().setPanelVisible(false)} />
         </div>
       </div>
       <div className="min-h-0 flex-1">

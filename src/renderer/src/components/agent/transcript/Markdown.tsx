@@ -306,7 +306,7 @@ export function CodeBlock({ className, children }: { className?: string; childre
 
   return (
     <div className="group/code my-2 overflow-hidden rounded-lg border border-line bg-input">
-      <div className="flex h-7 items-center gap-1 border-b border-line bg-panel pl-2.5 pr-1 text-[11px] text-subtle">
+      <div className="flex h-7 items-center gap-1 border-b border-line bg-elevated pl-2.5 pr-1 text-[11px] text-subtle">
         {fileRef ? (
           <button
             type="button"
@@ -343,7 +343,7 @@ export function CodeBlock({ className, children }: { className?: string; childre
         </button>
       </div>
       <div className={cn('relative', collapsible && !expanded && 'max-h-[420px] overflow-hidden')}>
-        <pre className="selectable overflow-x-auto px-3 py-2.5 font-mono text-[12px] leading-[1.6]">
+        <pre className="selectable !my-0 overflow-x-auto px-3 py-2.5 font-mono text-[12px] leading-[1.6]">
           <code className={cn(className, 'hljs !bg-transparent')}>{children}</code>
         </pre>
         {collapsible && !expanded && (
@@ -354,7 +354,7 @@ export function CodeBlock({ className, children }: { className?: string; childre
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
-          className="flex w-full items-center justify-center gap-1 border-t border-line bg-panel py-1 text-[11px] text-muted hover:bg-hover hover:text-fg"
+          className="flex w-full items-center justify-center gap-1 border-t border-line bg-elevated py-1 text-[11px] text-muted hover:bg-hover hover:text-fg"
         >
           <ChevronDown size={12} className={cn('transition-transform', expanded && 'rotate-180')} />
           {expanded ? 'Collapse' : `Show all ${lines} lines`}

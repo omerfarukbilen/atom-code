@@ -144,7 +144,7 @@ const Turn = memo(function Turn({ items, deferred }: { items: TranscriptItem[]; 
   const hasResult = items.some((i) => i.kind === 'result')
   const copyText = useMemo(() => (hasResult ? turnText(items) : ''), [hasResult, items])
   return (
-    <section className="flex min-w-0 flex-col gap-2.5" style={deferred ? DEFERRED_STYLE : undefined}>
+    <section className="flex min-w-0 flex-col gap-2" style={deferred ? DEFERRED_STYLE : undefined}>
       {segments.map((seg) => {
         if (seg.kind === 'assistant') {
           return (
@@ -207,10 +207,19 @@ export function MessageList({ chatId }: { chatId: string }) {
     if (prev.chatId === chatId && prev.lastUserId !== lastUserId && lastUserId) scrollToBottom()
   }, [chatId, lastUserId, scrollToBottom])
 
-  // New items / prompts (e.g. the turn footer, a permission card) stay visible while pinned.
+  // New items (e.g. the turn footer) stay visible while pinned.
   useLayoutEffect(() => {
     pinIfSticky()
-  }, [items.length, pendingCount, pinIfSticky])
+  }, [items.length, pinIfSticky])
+
+  // A new permission / plan / question prompt blocks the agent: always bring it into view.
+  const prevPending = useRef({ chatId, count: pendingCount })
+  useLayoutEffect(() => {
+    const prev = prevPending.current
+    prevPending.current = { chatId, count: pendingCount }
+    if (prev.chatId === chatId && pendingCount > prev.count) scrollToBottom()
+    else pinIfSticky()
+  }, [chatId, pendingCount, scrollToBottom, pinIfSticky])
 
   useEffect(() => {
     if (needsHistory) void useAgentStore.getState().loadHistoryIfNeeded(chatId)

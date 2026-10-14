@@ -23,7 +23,10 @@ function writeOpen(open: boolean): void {
   }
 }
 
-/** Compact live todo progress shown above the composer (renders nothing when the agent has no todo list). */
+/**
+ * Compact live todo progress shown above the composer. Renders nothing when the agent has no todo list, or when
+ * every task is completed and the turn has ended.
+ */
 export function TodoStrip({ chatId }: { chatId: string }) {
   const todos = useAgentStore((s) => s.chats[chatId]?.todos ?? null)
   const running = useAgentStore((s) => {
@@ -35,6 +38,8 @@ export function TodoStrip({ chatId }: { chatId: string }) {
 
   const { total, completed, current } = todoProgress(todos)
   const allDone = completed === total
+  // A finished list stays visible until the turn ends, then gets out of the way.
+  if (allDone && !running) return null
   const next = todos.find((t) => t.status === 'pending')
   const pct = total ? Math.round((completed / total) * 100) : 0
   const label = allDone ? 'All tasks completed' : current ? current.activeForm || current.content : next ? `Next: ${next.content}` : 'Tasks'
@@ -44,7 +49,7 @@ export function TodoStrip({ chatId }: { chatId: string }) {
   }
 
   return (
-    <div className="overflow-hidden rounded-lg border border-line bg-panel">
+    <div className="overflow-hidden rounded-lg border border-line bg-elevated shadow-sm">
       <button
         type="button"
         onClick={toggle}

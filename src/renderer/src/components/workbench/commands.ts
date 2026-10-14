@@ -24,6 +24,18 @@ export function revealSidebarView(view: SidebarView): void {
   if (layout().agentMaximized) layout().setAgentMaximized(false)
 }
 
+/** Toggle the bottom panel. In the agent layout the editor column (and the panel in it) is hidden, so showing
+ * the panel leaves the agent layout instead of toggling an invisible panel. */
+export function togglePanel(): void {
+  const l = layout()
+  if (l.agentMaximized) {
+    l.setAgentMaximized(false)
+    l.setPanelVisible(true)
+    return
+  }
+  l.togglePanel()
+}
+
 function focusSearch(): void {
   revealSidebarView('search')
   // Seed the query with a single-line editor selection, like VS Code.
@@ -51,19 +63,22 @@ export function registerWorkbenchCommands(): () => void {
 
     // ── Layout ──────────────────────────────────────────────────────────────
     { id: 'view.toggleSidebar', title: 'Toggle Primary Sidebar', category: 'View', keybinding: 'mod+b', icon: 'PanelLeft', run: () => layout().toggleSidebar() },
-    { id: 'view.togglePanel', title: 'Toggle Panel', category: 'View', keybinding: 'mod+j', icon: 'PanelBottom', run: () => layout().togglePanel() },
+    { id: 'view.togglePanel', title: 'Toggle Panel', category: 'View', keybinding: 'mod+j', icon: 'PanelBottom', run: togglePanel },
     { id: 'view.toggleAgent', title: 'Toggle ATOM Agent Panel', category: 'View', keybinding: 'mod+alt+b', icon: 'PanelRight', run: () => layout().toggleAgent() },
     {
       id: 'view.toggleAgentMaximized',
       title: 'Toggle Agent Layout (Maximize Agent)',
       category: 'View',
       icon: 'Maximize2',
+      // The palette lists the agent's own "Agent: Toggle Maximized Agent"; keep this id for menus/bindings only.
+      hidden: true,
       run: () => layout().setAgentMaximized(!layout().agentMaximized)
     },
     { id: 'view.explorer', title: 'Show Explorer', category: 'View', keybinding: 'mod+shift+e', icon: 'Files', run: () => revealSidebarView('explorer') },
     { id: 'view.search', title: 'Search in Files', category: 'Search', keybinding: 'mod+shift+f', icon: 'Search', run: focusSearch },
     { id: 'view.git', title: 'Show Source Control', category: 'View', keybinding: 'mod+shift+g', icon: 'GitBranch', run: () => revealSidebarView('git') },
-    { id: 'view.history', title: 'Show Agent History', category: 'View', icon: 'History', run: () => revealSidebarView('history') },
+    // Hidden: the palette lists the agent's "Agent: Show Chat History" for the same view.
+    { id: 'view.history', title: 'Show Agent History', category: 'View', icon: 'History', hidden: true, run: () => revealSidebarView('history') },
     { id: 'view.skills', title: 'Show Skills, Agents & Commands', category: 'View', icon: 'Sparkles', run: () => revealSidebarView('skills') },
     { id: 'view.settings', title: 'Open Settings', category: 'Preferences', keybinding: 'mod+,', icon: 'Settings', run: () => layout().openSettings() },
     { id: 'view.account', title: 'Account & Subscription', category: 'Preferences', icon: 'CircleUser', run: () => layout().openSettings('account') },

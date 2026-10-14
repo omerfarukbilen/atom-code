@@ -443,6 +443,9 @@ export const useEditorStore = create<EditorState>((set, get) => {
     // Let React switch the editor to another model first.
     window.setTimeout(() => {
       entry.disposables.forEach((d) => d.dispose())
+      // The file may have been reopened in the meantime, adopting this very model (ensureFileEntry finds it
+      // through monaco.editor.getModel) — never dispose a model that a live entry still owns.
+      if (files.get(k)?.model === entry.model) return
       if (!entry.model.isDisposed()) entry.model.dispose()
     }, 0)
   }

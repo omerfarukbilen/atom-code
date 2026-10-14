@@ -106,14 +106,20 @@ export async function moveEntry(source: string, targetDir: string): Promise<void
   }
 }
 
-/** When a file that is open in the editor moves, open it at its new location (clean tabs only). */
+/**
+ * When files that are open in the editor move, reopen them at their new location (clean tabs only; a dirty
+ * buffer stays on its old path, marked as deleted, so no edits are lost). Background tabs stay in the
+ * background and focus is not stolen from the explorer.
+ */
 function reopenMovedTabs(from: string, to: string): void {
   const editor = useEditorStore.getState()
   for (const tab of editor.tabs) {
-    if (tab.kind !== 'file' || tab.dirty || !isInside(from, tab.path)) continue
+    if ((tab.kind !== 'file' && tab.kind !== 'image') || tab.dirty || !isInside(from, tab.path)) continue
     const moved = to + tab.path.slice(from.length)
     const wasActive = editor.activeTabId === tab.id
-    void editor.closeTab(tab.id).then(() => (wasActive ? editor.openFile(moved, { preview: tab.preview }) : undefined))
+    void editor
+      .closeTab(tab.id)
+      .then(() => useEditorStore.getState().openFile(moved, { preview: tab.preview, activate: wasActive, focus: false, silent: true }))
   }
 }
 
