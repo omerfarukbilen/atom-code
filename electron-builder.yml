@@ -14,6 +14,8 @@ files:
 extraResources:
   - from: resources/atom-plugin
     to: atom-plugin
+  - from: resources/icon.png
+    to: icon.png
 asarUnpack:
   - resources/**
   - '**/node_modules/@anthropic-ai/claude-agent-sdk-*/**'
@@ -35,8 +37,12 @@ nsis:
   shortcutName: ATOM Code
 linux:
   icon: resources/icon.png
+  # glibc builds do not need the musl Claude Code binary (~260 MB).
+  files:
+    - '!**/node_modules/@anthropic-ai/claude-agent-sdk-linux-*-musl/**'
   category: Development
   target:
     - AppImage
     - deb
-npmRebuild: true
+# node-pty is an N-API module: the binary built by `npm install` already works with Electron.
+npmRebuild: false
