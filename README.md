@@ -74,6 +74,10 @@ Alternatifler: **Uzun ömürlü token** (`claude setup-token`, ATOM Code bunu ş
 | `⌘S` / `⌘⌥S` | Kaydet / tümünü kaydet |
 | `⌘,` | Ayarlar |
 
+### Çalışma alanı güveni
+
+Bir klasör Claude Code proje yapılandırması içeriyorsa (`.claude/settings.json` hook'ları, `.mcp.json` sunucuları, `CLAUDE.md`/`ATOM.md`), ATOM Code ajanı ilk kez başlatmadan önce **"Bu klasöre güveniyor musunuz?"** diye sorar. Güvenmezseniz ajan yine çalışır ama projenin hook'larını, MCP sunucularını ve talimatlarını yüklemez — böylece indirdiğiniz kötü niyetli bir depo bilgisayarınızda komut çalıştıramaz. Kararı daha sonra *Agent → Workspace Trust…* (veya komut paletinde *Workspace: Manage Trust…*) ile değiştirebilirsiniz.
+
 ### Proje kuralları
 
 Proje köküne bir **`ATOM.md`** dosyası koyun (Ayarlar → Rules → *Create ATOM.md*): ajan her sohbette bu kuralları okur. `CLAUDE.md` dosyaları da otomatik yüklenir. Genel talimatlar için Ayarlar → Rules → *Custom instructions*.
@@ -91,6 +95,7 @@ ATOM Code is a Cursor-style desktop code editor whose agent runs on the official
 - Rich live transcript: streaming text and thinking, tool cards with inline diffs and terminal output, nested subagent tasks, todo strip, plan approval, multiple-choice questions, turn stats, context ring.
 - `@` context (files, folders, selection, terminal, problems, git diff), image paste, `⌘K` inline edit, `⌘L` add selection to chat, checkpoints/rewind.
 - Bundled skills library (17 skills, 8 subagents, 12 commands) + your own skills from `~/.claude/skills` and `.claude/skills`.
+- **Workspace trust**: project hooks, `.mcp.json` servers and project instructions load only after you trust the folder.
 - In-process **atom-ide** MCP server: the agent can read open editors, your selection, diagnostics and terminal output, and open files for you.
 - Full editor: Monaco, explorer, ripgrep search, Git panel with AI commit messages, node-pty terminals, command palette, quick open, three themes.
 

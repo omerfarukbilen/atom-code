@@ -55,8 +55,20 @@ export function describeSuggestions(suggestions: unknown[] | undefined): string[
   return out
 }
 
-function permissionSentence(req: PermissionRequest): string {
-  if (req.title) return req.title.replace(/^Claude\b/, 'ATOM')
+/** Shortens absolute paths under the workspace in a CLI-provided sentence to workspace-relative ones. */
+function relativizeTitle(title: string, workspace: string): string {
+  const roots = new Set([workspace, workspace.replace(/\\/g, '/')].map((r) => r.replace(/[\\/]+$/, '')))
+  let out = title
+  for (const root of roots) {
+    if (!root) continue
+    const escaped = root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    out = out.replace(new RegExp(escaped + '[\\\\/]', 'gi'), '')
+  }
+  return out
+}
+
+function permissionSentence(req: PermissionRequest, workspace = ''): string {
+  if (req.title) return relativizeTitle(req.title.replace(/^Claude\b/, 'ATOM'), workspace)
   const i = req.input
   const file = str(i.file_path) ?? str(i.notebook_path) ?? str(i.path)
   const name = file ? basename(file) : 'this file'
@@ -216,6 +228,7 @@ function PermissionPreview({ request }: { request: PermissionRequest }) {
 }
 
 function PermissionCard({ request, autoFocus }: { request: PermissionRequest; autoFocus: boolean }) {
+  const { workspace: titleWorkspace } = useTranscript()
   const { ref, armed } = useCardFocus(autoFocus)
   const [busy, respond] = useResponder(request.requestId)
   const [feedback, setFeedback] = useState('')
@@ -249,7 +262,7 @@ function PermissionCard({ request, autoFocus }: { request: PermissionRequest; au
       icon={ShieldQuestion}
       label="Permission request"
       onKeyDown={onKeyDown}
-      title={permissionSentence(request)}
+      title={permissionSentence(request, titleWorkspace)}
       subtitle={request.displayName && request.displayName !== request.toolName ? `${request.displayName} · ${request.toolName}` : request.toolName}
     >
       <div className="flex flex-col gap-2 px-3.5 pb-3">
