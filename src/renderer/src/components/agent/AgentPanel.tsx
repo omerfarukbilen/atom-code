@@ -60,7 +60,10 @@ export function AgentPanel() {
   else if (!hasItems) body = <EmptyChat chatId={chatId} />
   else body = <MessageList chatId={chatId} />
 
-  const column = maximized ? 'mx-auto w-full max-w-3xl' : 'w-full'
+  // Maximized: transcript + composer share a centered max-w-3xl column. Otherwise the composer tracks the
+  // transcript's own max content width so both stay aligned in very wide panels.
+  const bodyColumn = maximized ? 'mx-auto w-full max-w-3xl' : 'w-full'
+  const footerColumn = maximized ? 'mx-auto w-full max-w-3xl' : 'mx-auto w-full max-w-[880px]'
 
   return (
     <section
@@ -73,12 +76,12 @@ export function AgentPanel() {
       className="relative flex h-full min-h-0 w-full min-w-0 flex-col bg-panel"
     >
       <AgentHeader chatId={chatId} />
-      {chatId && !loggedOut && <ChatBanner chatId={chatId} className={column} />}
+      {chatId && !loggedOut && <ChatBanner chatId={chatId} className={footerColumn} />}
       <div className="relative min-h-0 flex-1">
-        <div className={cn('h-full min-h-0', column)}>{body}</div>
+        <div className={cn('flex h-full min-h-0 flex-col', bodyColumn)}>{body}</div>
       </div>
       {chatId && !loggedOut && (
-        <div className={cn('shrink-0 px-2.5 pb-2.5 pt-1', column)}>
+        <div className={cn('flex shrink-0 flex-col gap-1.5 px-2.5 pb-2.5 pt-1', footerColumn)}>
           <TodoStrip chatId={chatId} />
           <Composer key={chatId} chatId={chatId} />
         </div>

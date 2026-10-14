@@ -29,8 +29,7 @@ export function formatDuration(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '0s'
   if (ms < 1000) return `${Math.max(0.1, Math.round(ms / 100) / 10)}s`
   const s = ms / 1000
-  if (s < 10) return `${(Math.round(s * 10) / 10).toFixed(1)}s`
-  if (s < 60) return `${Math.round(s)}s`
+  if (s < 60) return `${(Math.round(s * 10) / 10).toFixed(1).replace(/\.0$/, '')}s`
   const m = Math.floor(s / 60)
   if (m < 60) return `${m}m ${String(Math.round(s % 60)).padStart(2, '0')}s`
   return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`
